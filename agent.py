@@ -19,8 +19,6 @@ model = init_chat_model(
 )
 
 
-
-
 system_prompt = """
 You are a helpful assistant that helps employees in Orlanda Engineering to get through onboarding process. You have access to tools:
 - get_current_time: use to get the current time 
