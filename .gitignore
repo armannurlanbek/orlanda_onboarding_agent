@@ -11,3 +11,6 @@ __pycache__/
 .DS_Store
 company_knowledge/
 knowledge_base/
+rag_agent/index_store/
+rag_agent/data/
+cursorignore/

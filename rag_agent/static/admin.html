@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Админ-панель — RAG Агент</title>
+  <style>
+    :root {
+      --font-body: "Inter", "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      --font-display: "Poppins", "Aptos Display", "Trebuchet MS", "Segoe UI", sans-serif;
+      --bg: #f8f4ff;
+      --bg-gradient: radial-gradient(circle at top left, #f3e8ff 0, #f8f4ff 45%, #fdfbff 100%);
+      --surface: #ffffff;
+      --border: #eee4ff;
+      --primary: #8b5cf6;
+      --primary-soft: #f3e8ff;
+      --text-main: #2f2548;
+      --text-muted: #746b8d;
+      --error: #c62828;
+      --radius-md: 10px;
+      --shadow-soft: 0 10px 30px rgba(15, 23, 42, 0.08);
+      --transition-fast: 0.18s ease-out;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      font-family: var(--font-body);
+      max-width: 1760px;
+      margin: 0 auto;
+      padding: 1.5rem 1.25rem;
+      min-height: 100vh;
+      background: var(--bg-gradient);
+      color: var(--text-main);
+    }
+
+    h1 {
+      margin: 0 0 0.5rem 0;
+      font-size: 1.4rem;
+      color: var(--text-main);
+      font-family: var(--font-display);
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.25rem;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 0.92rem;
+      margin-bottom: 1rem;
+    }
+
+    a {
+      color: var(--primary);
+      text-decoration: none;
+      transition: color var(--transition-fast), background-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+    }
+
+    a:hover { text-decoration: underline; }
+
+    .back-link {
+      padding: 0.5rem 1rem;
+      background: #6b5aa8;
+      color: #fff;
+      border-radius: 999px;
+      text-decoration: none;
+      font-family: var(--font-display);
+      box-shadow: 0 8px 20px rgba(91, 74, 150, 0.28);
+    }
+
+    .back-link:hover {
+      background: #5b4a96;
+      text-decoration: none;
+    }
+
+    .header-tools {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 0.6rem 1.05rem;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: 0.95rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.3rem;
+      box-shadow: 0 8px 22px rgba(124, 58, 237, 0.25);
+      font-family: var(--font-display);
+      transition: background-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast), opacity var(--transition-fast);
+    }
+
+    button:hover {
+      background: #6d28d9;
+      transform: translateY(-1px);
+      box-shadow: 0 18px 36px rgba(124, 58, 237, 0.32);
+    }
+
+    button:active {
+      transform: translateY(0);
+      box-shadow: 0 6px 16px rgba(124, 58, 237, 0.35);
+    }
+
+    button.secondary {
+      background: #6b5aa8;
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.25);
+    }
+
+    button.secondary:hover {
+      background: #5b4a96;
+    }
+    .log-panel {
+      background: var(--surface);
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+      box-shadow: var(--shadow-soft);
+    }
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+    }
+    .log-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      min-width: 1350px;
+    }
+
+    .log-table th,
+    .log-table td {
+      padding: 0.65rem 0.8rem;
+      text-align: left;
+      border-bottom: 1px solid #eee;
+      vertical-align: top;
+    }
+
+    .log-table th {
+      background: #f9fafb;
+      font-weight: 600;
+      color: #374151;
+    }
+
+    .log-table tr:hover { background: #f9fafb; }
+    .log-table .col-time { width: 160px; white-space: nowrap; }
+    .log-table .col-user { width: 120px; }
+    .log-table .col-q { min-width: 180px; }
+    .log-table .col-a { min-width: 200px; max-width: 320px; }
+    .log-table .col-sources { width: 200px; font-size: 0.85rem; color: #555; }
+    .log-table .col-score { width: 120px; }
+    .log-table .col-correct { min-width: 220px; }
+    .log-table .content-preview {
+      max-height: 4.5em;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .log-table .content-full {
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .log-table .error { color: var(--error); }
+
+    .log-table .sources-list { font-size: 0.85rem; color: #555; }
+    .review-input,
+    .review-textarea {
+      width: 100%;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 0.4rem 0.5rem;
+      font: inherit;
+      background: #fff;
+    }
+    .review-input { max-width: 84px; }
+    .review-textarea {
+      min-height: 64px;
+      resize: vertical;
+      white-space: pre-wrap;
+    }
+    .save-hint {
+      margin-top: 0.25rem;
+      font-size: 0.78rem;
+      color: #666;
+    }
+    .save-hint.saving { color: #7c3aed; }
+    .save-hint.saved { color: #2e7d32; }
+    .save-hint.error { color: #c62828; }
+    .tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .tab-btn {
+      padding: 0.45rem 1rem;
+      background: #ede9fe;
+      color: #4c1d95;
+      border: none;
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: 0.93rem;
+      box-shadow: 0 6px 14px rgba(124, 58, 237, 0.18);
+      transition: background-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+    }
+
+    .tab-btn:hover { background: #ddd6fe; }
+
+    .tab-btn.active {
+      background: var(--primary);
+      box-shadow: 0 14px 30px rgba(124, 58, 237, 0.32);
+      transform: translateY(-1px);
+    }
+    .doc-table .col-type { width: 85px; white-space: nowrap; }
+    .doc-table .col-resp { width: 160px; }
+    .doc-table .col-last { width: 200px; white-space: nowrap; }
+    .doc-table .col-period { width: 190px; white-space: nowrap; }
+    .doc-table .col-exp { width: 200px; white-space: nowrap; }
+    .doc-table .col-actions { width: 290px; }
+
+    .doc-table input[type="date"] {
+      width: 170px;
+      padding: 0.35rem 0.45rem;
+      border: 1px solid #ddd;
+      border-radius: 999px;
+      outline: none;
+      font-size: 0.88rem;
+    }
+
+    .doc-table input[type="date"]:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.3);
+    }
+
+    .doc-row.expired-row { background: #fef2f2; }
+
+    .expired-flag {
+      color: #b91c1c;
+      font-weight: 700;
+      font-size: 0.82rem;
+      padding: 0.12rem 0.45rem;
+      border-radius: 999px;
+      background: #fee2e2;
+    }
+
+    .status-ok {
+      display: inline-block;
+      font-size: 0.82rem;
+      padding: 0.12rem 0.45rem;
+      border-radius: 999px;
+      background: #dcfce7;
+      color: #15803d;
+      font-weight: 600;
+    }
+
+    .docs-empty {
+      padding: 2rem;
+      text-align: center;
+      color: #9ca3af;
+      font-size: 0.95rem;
+    }
+
+    .empty-state {
+      padding: 2rem;
+      text-align: center;
+      color: #9ca3af;
+      font-size: 0.95rem;
+    }
+
+    .load-more {
+      padding: 0.75rem;
+      text-align: center;
+      border-top: 1px solid #eee;
+    }
+
+    .auth-required {
+      max-width: 360px;
+      margin: 2rem auto;
+      padding: 1.5rem;
+      background: var(--surface);
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      text-align: center;
+      box-shadow: var(--shadow-soft);
+    }
+
+    .auth-required a { display: inline-block; margin-top: 0.5rem; }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      border: 2px solid rgba(148, 163, 184, 0.4);
+      border-top-color: rgba(55, 65, 81, 0.9);
+      animation: spin 0.7s linear infinite;
+      display: inline-block;
+      vertical-align: middle;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    @media (max-width: 768px) {
+      body {
+        padding: 1.1rem 0.75rem;
+      }
+
+      .header {
+        align-items: flex-start;
+      }
+
+      .log-table th,
+      .log-table td {
+        padding: 0.5rem 0.5rem;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div class="header">
+      <div>
+        <h1>Админ-панель</h1>
+        <p class="subtitle">Лог вопросов, ответов и использованных документов</p>
+      </div>
+      <div class="header-tools">
+        <a href="/" class="back-link">← К чату</a>
+      </div>
+    </div>
+
+    <div id="auth-required" class="auth-required" style="display: none;">
+      <p>Для просмотра логов нужно войти в аккаунт.</p>
+      <a href="/">Перейти к чату</a>
+    </div>
+
+    <div id="access-denied" class="auth-required" style="display: none;">
+      <p>Доступ к админ-панели только у администраторов.</p>
+      <a href="/">Перейти к чату</a>
+    </div>
+
+    <div id="content" style="display: none;">
+      <div class="tabs">
+        <button type="button" id="tab-logs" class="tab-btn active">Логи</button>
+        <button type="button" id="tab-docs" class="tab-btn">Документы</button>
+      </div>
+
+      <div id="logs-section">
+        <div class="log-panel">
+          <div class="table-wrap">
+            <table class="log-table">
+              <thead>
+                <tr>
+                  <th class="col-time">Время</th>
+                  <th class="col-user">Пользователь</th>
+                  <th class="col-q">Вопрос</th>
+                  <th class="col-a">Ответ</th>
+                  <th class="col-sources">Документы</th>
+                  <th class="col-score">Оценка (1-10)</th>
+                  <th class="col-correct">Правильный ответ</th>
+                </tr>
+              </thead>
+              <tbody id="log-body"></tbody>
+            </table>
+          </div>
+          <div id="empty-state" class="empty-state" style="display: none;">Пока нет записей. Задайте вопросы в чате.</div>
+          <div id="load-more" class="load-more" style="display: none;">
+            <button type="button" id="btn-load-more">Загрузить ещё</button>
+          </div>
+        </div>
+        <p id="total-info" class="subtitle" style="margin-top: 0.5rem;"></p>
+      </div>
+
+      <div id="docs-section" style="display: none;">
+        <div class="log-panel">
+          <div id="docs-info" class="subtitle" style="margin: 0.75rem 0.75rem 0.25rem 0.75rem;"></div>
+          <div class="table-wrap">
+            <table class="log-table doc-table">
+              <thead>
+                <tr>
+                  <th class="col-type">Тип</th>
+                  <th>Название / путь</th>
+                  <th class="col-resp">Ответственный</th>
+                  <th class="col-last">Дата загрузки/обновления</th>
+                  <th class="col-period">Период (дней)</th>
+                  <th class="col-exp">Дата истечения</th>
+                  <th>Статус</th>
+                  <th class="col-actions">Установить дату истечения</th>
+                </tr>
+              </thead>
+              <tbody id="docs-body"></tbody>
+            </table>
+          </div>
+          <div id="docs-empty" class="docs-empty" style="display: none;">Нет документов в системе.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const AUTH_TOKEN_KEY = "rag_agent_token";
+    const PAGE_SIZE = 50;
+    let offset = 0;
+    let total = 0;
+    let docsLoaded = false;
+    const saveTimers = {};
+    const docsSaveTimers = {};
+
+    function getToken() { return localStorage.getItem(AUTH_TOKEN_KEY); }
+
+
+    function authHeaders() {
+      const t = getToken();
+      return t ? { "Authorization": "Bearer " + t } : {};
+    }
+
+    function escapeAttr(s) {
+      if (s == null) return "";
+      return String(s).replaceAll("\"", "&quot;").replaceAll("'", "&#39;");
+    }
+
+    function formatTime(iso) {
+      if (!iso) return "—";
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
+      } catch (_) { return iso; }
+    }
+
+    function escapeHtml(s) {
+      if (s == null) return "";
+      const d = document.createElement("div");
+      d.textContent = String(s);
+      return d.innerHTML;
+    }
+
+    function formatSources(sources) {
+      if (!sources || !sources.length) return "—";
+      return sources.map(s => s.file + (s.page != null ? " (стр. " + s.page + ")" : "")).join(", ");
+    }
+
+    function isoToDateInputValue(iso) {
+      if (!iso) return "";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return "";
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return y + "-" + m + "-" + day;
+    }
+
+    function diffDaysCeil(fromIso, toDateStr) {
+      const from = new Date(fromIso);
+      const to = new Date(toDateStr + "T23:59:59");
+      if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return null;
+      const ms = to.getTime() - from.getTime();
+      return Math.ceil(ms / 86400000);
+    }
+
+    function setActiveTab(tab) {
+      const logs = document.getElementById("logs-section");
+      const docs = document.getElementById("docs-section");
+      const tabLogs = document.getElementById("tab-logs");
+      const tabDocs = document.getElementById("tab-docs");
+      if (tab === "docs") {
+        logs.style.display = "none";
+        docs.style.display = "block";
+        tabLogs.classList.remove("active");
+        tabDocs.classList.add("active");
+      } else {
+        docs.style.display = "none";
+        logs.style.display = "block";
+        tabDocs.classList.remove("active");
+        tabLogs.classList.add("active");
+      }
+    }
+
+    async function ensureAdminAccess() {
+      const token = getToken();
+      if (!token) {
+        document.getElementById("auth-required").style.display = "block";
+        document.getElementById("access-denied").style.display = "none";
+        document.getElementById("content").style.display = "none";
+        return false;
+      }
+      document.getElementById("auth-required").style.display = "none";
+      document.getElementById("access-denied").style.display = "none";
+      document.getElementById("content").style.display = "block";
+
+      const meRes = await fetch("/auth/me", { headers: authHeaders() });
+      if (meRes.status === 401) {
+        document.getElementById("auth-required").style.display = "block";
+        document.getElementById("access-denied").style.display = "none";
+        document.getElementById("content").style.display = "none";
+        return false;
+      }
+      if (!meRes.ok) throw new Error("Ошибка проверки доступа");
+      const me = await meRes.json();
+      if ((me.role || "user") !== "admin") {
+        document.getElementById("access-denied").style.display = "block";
+        document.getElementById("auth-required").style.display = "none";
+        document.getElementById("content").style.display = "none";
+        return false;
+      }
+      return true;
+    }
+
+    function addRow(entry) {
+      const tbody = document.getElementById("log-body");
+      const tr = document.createElement("tr");
+      const err = entry.error;
+      const answer = err ? "[Ошибка: " + escapeHtml(entry.error) + "]" : (entry.answer || "—");
+      const answerClass = err ? "content-preview error" : "content-preview";
+      const scoreVal = entry.score == null ? "" : String(entry.score);
+      const correctVal = entry.correct_answer || "";
+      const entryId = entry.id || "";
+      tr.innerHTML =
+        "<td class=\"col-time\">" + escapeHtml(formatTime(entry.timestamp)) + "</td>" +
+        "<td class=\"col-user\">" + escapeHtml(entry.username || "—") + "</td>" +
+        "<td class=\"col-q\"><div class=\"content-preview\" title=\"" + escapeHtml(entry.question) + "\">" + escapeHtml((entry.question || "").slice(0, 200)) + ((entry.question || "").length > 200 ? "…" : "") + "</div></td>" +
+        "<td class=\"col-a\"><div class=\"" + answerClass + "\" title=\"" + escapeHtml(answer) + "\">" + escapeHtml(String(answer).slice(0, 300)) + (String(answer).length > 300 ? "…" : "") + "</div></td>" +
+        "<td class=\"col-sources\"><span class=\"sources-list\">" + escapeHtml(formatSources(entry.sources)) + "</span></td>" +
+        "<td class=\"col-score\">" +
+          "<input class=\"review-input\" type=\"number\" min=\"1\" max=\"10\" step=\"1\" value=\"" + escapeAttr(scoreVal) + "\" data-entry-id=\"" + escapeAttr(entryId) + "\" data-field=\"score\" />" +
+        "</td>" +
+        "<td class=\"col-correct\">" +
+          "<textarea class=\"review-textarea\" data-entry-id=\"" + escapeAttr(entryId) + "\" data-field=\"correct_answer\" placeholder=\"Введите корректный ответ\">" + escapeHtml(correctVal) + "</textarea>" +
+          "<div class=\"save-hint\" data-entry-id=\"" + escapeAttr(entryId) + "\"></div>" +
+        "</td>";
+
+      const scoreInput = tr.querySelector(".review-input");
+      const correctInput = tr.querySelector(".review-textarea");
+      const hint = tr.querySelector(".save-hint");
+
+      function setHint(text, kind) {
+        hint.textContent = text || "";
+        hint.className = "save-hint" + (kind ? " " + kind : "");
+      }
+
+      function payloadFromInputs() {
+        const raw = scoreInput.value.trim();
+        let score = null;
+        if (raw !== "") {
+          const n = Number(raw);
+          if (!Number.isFinite(n) || n < 1 || n > 10) {
+            return { error: "Оценка должна быть числом от 1 до 10." };
+          }
+          score = Math.trunc(n);
+        }
+        return { score, correct_answer: correctInput.value };
+      }
+
+      async function saveNow() {
+        if (!entryId) {
+          setHint("Ошибка: id записи не найден", "error");
+          return;
+        }
+        const payload = payloadFromInputs();
+        if (payload.error) {
+          setHint(payload.error, "error");
+          return;
+        }
+        setHint("Сохранение...", "saving");
+        try {
+          const r = await fetch("/admin/logs/" + encodeURIComponent(entryId) + "/review", {
+            method: "PATCH",
+            headers: { ...authHeaders(), "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (!r.ok) throw new Error("Не удалось сохранить");
+          setHint("Сохранено", "saved");
+        } catch (e) {
+          setHint(e.message || "Ошибка сохранения", "error");
+        }
+      }
+
+      function scheduleSave() {
+        if (!entryId) return;
+        if (saveTimers[entryId]) clearTimeout(saveTimers[entryId]);
+        saveTimers[entryId] = setTimeout(saveNow, 500);
+      }
+
+      scoreInput.addEventListener("input", scheduleSave);
+      scoreInput.addEventListener("blur", saveNow);
+      correctInput.addEventListener("input", scheduleSave);
+      correctInput.addEventListener("blur", saveNow);
+
+      tbody.appendChild(tr);
+    }
+
+    async function loadLogs(append) {
+      const ok = await ensureAdminAccess();
+      if (!ok) return;
+
+      if (!append) {
+        offset = 0;
+        document.getElementById("log-body").innerHTML = "";
+      }
+
+      try {
+        const r = await fetch("/admin/logs?limit=" + PAGE_SIZE + "&offset=" + offset, { headers: authHeaders() });
+        if (r.status === 401) {
+          document.getElementById("auth-required").style.display = "block";
+          document.getElementById("content").style.display = "none";
+          return;
+        }
+        if (r.status === 403) {
+          document.getElementById("access-denied").style.display = "block";
+          document.getElementById("content").style.display = "none";
+          return;
+        }
+        if (!r.ok) throw new Error("Ошибка загрузки");
+        const data = await r.json();
+        const entries = data.entries || [];
+        total = data.total ?? 0;
+        entries.forEach(addRow);
+        offset += entries.length;
+
+        document.getElementById("empty-state").style.display = (offset === 0 && total === 0) ? "block" : "none";
+        document.getElementById("load-more").style.display = (offset < total) ? "block" : "none";
+        document.getElementById("total-info").textContent = "Всего записей: " + total;
+      } catch (e) {
+        document.getElementById("total-info").textContent = "Ошибка: " + (e.message || "не удалось загрузить логи");
+      }
+    }
+
+    document.getElementById("btn-load-more").addEventListener("click", () => loadLogs(true));
+
+    function renderDocs(meta) {
+      const tbody = document.getElementById("docs-body");
+      const empty = document.getElementById("docs-empty");
+      tbody.innerHTML = "";
+
+      const pdfs = meta && meta.pdfs ? meta.pdfs : [];
+      const items = meta && meta.items ? meta.items : [];
+      const all = [];
+      pdfs.forEach(p => all.push({ kind: "pdf", ...p }));
+      items.forEach(i => all.push({ kind: "item", ...i }));
+
+      if (!all.length) {
+        empty.style.display = "block";
+        return;
+      }
+      empty.style.display = "none";
+
+      all.forEach(entry => {
+        const tr = document.createElement("tr");
+        tr.className = "doc-row" + (entry.expired ? " expired-row" : "");
+
+        const typeLabel = entry.kind === "pdf" ? "PDF" : "Элемент";
+        const title = entry.kind === "pdf"
+          ? (entry.name || entry.path || "—") + (entry.path ? " (" + entry.path + ")" : "")
+          : (entry.name || entry.id || "—");
+        const resp = entry.responsible || "—";
+
+        const period = entry.update_period_days == null ? "—" : String(entry.update_period_days);
+        const expires = entry.expires_at ? formatTime(entry.expires_at) : "—";
+        const lastUpd = entry.last_updated_at ? formatTime(entry.last_updated_at) : "—";
+        const status = entry.expired ? "<span class=\"expired-flag\">Просрочено</span>" : "Ок";
+
+        const dateInputVal = isoToDateInputValue(entry.expires_at || "");
+
+        tr.innerHTML =
+          "<td class=\"col-type\">" + escapeHtml(typeLabel) + "</td>" +
+          "<td title=\"" + escapeHtml(title) + "\">" + escapeHtml(title).slice(0, 220) + (title.length > 220 ? "…" : "") + "</td>" +
+          "<td>" + escapeHtml(resp) + "</td>" +
+          "<td class=\"col-last\">" + escapeHtml(lastUpd) + "</td>" +
+          "<td class=\"col-period\">" + escapeHtml(period) + "</td>" +
+          "<td class=\"col-exp\">" + escapeHtml(expires) + "</td>" +
+          "<td>" + status + "</td>" +
+          "<td class=\"col-actions\">" +
+            "<input type=\"date\" value=\"" + escapeAttr(dateInputVal) + "\" data-kind=\"" + escapeAttr(entry.kind) + "\"" +
+              (entry.kind === "pdf" ? " data-path=\"" + escapeAttr(entry.path || "") + "\"" : " data-item-id=\"" + escapeAttr(entry.id || "") + "\"") + " />" +
+            "<button type=\"button\" style=\"margin-left:0.5rem;\">Сохранить дату</button>" +
+            "<div class=\"save-hint\" data-doc-id=\"" + escapeAttr((entry.kind === "pdf" ? (entry.path || "") : (entry.id || ""))) + "\"></div>" +
+          "</td>";
+
+        const input = tr.querySelector("input[type=date]");
+        const btn = tr.querySelector("button");
+        const hint = tr.querySelector(".save-hint");
+        const docKey = entry.kind === "pdf" ? (entry.path || "") : (entry.id || "");
+
+        function setDocHint(text, kind) {
+          hint.textContent = text || "";
+          hint.className = "save-hint" + (kind ? " " + kind : "");
+        }
+
+        async function saveDate() {
+          const v = input.value.trim();
+          let update_period_days = null;
+          if (v !== "") {
+            if (!entry.last_updated_at) {
+              setDocHint("Нет даты загрузки/обновления", "error");
+              return;
+            }
+            const days = diffDaysCeil(entry.last_updated_at, v);
+            if (days == null || days < 1) {
+              setDocHint("Дата должна быть позже даты загрузки", "error");
+              return;
+            }
+            update_period_days = Math.trunc(days);
+          }
+          setDocHint("Сохранение...", "saving");
+          try {
+            if (entry.kind === "pdf") {
+              const r = await fetch("/knowledge/files/metadata", {
+                method: "PATCH",
+                headers: { ...authHeaders(), "Content-Type": "application/json" },
+                body: JSON.stringify({ path: entry.path, update_period_days }),
+              });
+              if (!r.ok) throw new Error("Не удалось обновить PDF");
+            } else {
+              const r = await fetch("/knowledge/items/" + encodeURIComponent(entry.id), {
+                method: "PATCH",
+                headers: { ...authHeaders(), "Content-Type": "application/json" },
+                body: JSON.stringify({ update_period_days }),
+              });
+              if (!r.ok) throw new Error("Не удалось обновить элемент");
+            }
+            setDocHint("Сохранено", "saved");
+            await loadDocuments(true);
+          } catch (e) {
+            setDocHint(e.message || "Ошибка обновления", "error");
+          }
+        }
+
+        function scheduleDateSave() {
+          if (!docKey) return;
+          if (docsSaveTimers[docKey]) clearTimeout(docsSaveTimers[docKey]);
+          docsSaveTimers[docKey] = setTimeout(saveDate, 450);
+        }
+
+        btn.addEventListener("click", saveDate);
+        input.addEventListener("change", scheduleDateSave);
+        input.addEventListener("blur", saveDate);
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function loadDocuments(keepTab) {
+      const ok = await ensureAdminAccess();
+      if (!ok) return;
+
+      document.getElementById("docs-info").textContent = "Загрузка метаданных…";
+      try {
+        const r = await fetch("/admin/documents/metadata", { headers: authHeaders() });
+        if (r.status === 401) {
+          return;
+        }
+        if (r.status === 403) {
+          document.getElementById("access-denied").style.display = "block";
+          document.getElementById("content").style.display = "none";
+          return;
+        }
+        if (!r.ok) throw new Error("Ошибка загрузки метаданных");
+        const data = await r.json();
+        renderDocs(data);
+
+        const pdfCount = (data.pdfs || []).length;
+        const itemCount = (data.items || []).length;
+        document.getElementById("docs-info").textContent = "Всего PDF: " + pdfCount + ", элементов: " + itemCount;
+        docsLoaded = true;
+        if (!keepTab) {
+          setActiveTab("docs");
+        }
+      } catch (e) {
+        document.getElementById("docs-info").textContent = "Ошибка: " + (e.message || "не удалось загрузить документы");
+      }
+    }
+
+    document.getElementById("tab-logs").addEventListener("click", () => {
+      setActiveTab("logs");
+    });
+    document.getElementById("tab-docs").addEventListener("click", async () => {
+      setActiveTab("docs");
+      if (!docsLoaded) await loadDocuments(true);
+    });
+
+    // Initial load: logs
+    loadLogs(false);
+  </script>
+</body>
+</html>

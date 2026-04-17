@@ -3,7 +3,14 @@ wikipedia
 langchain-community
 langchain-openai
 langchain-anthropic
+langchain-text-splitters
 python-dotenv
 pydantic
 duckduckgo-search
-
+pypdf
+faiss-gpu
+fastapi
+uvicorn
+langgraph-checkpoint-sqlite
+pyyaml
+cryptography

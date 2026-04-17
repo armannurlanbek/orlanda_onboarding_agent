@@ -1,0 +1,2031 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG Агент — база знаний</title>
+  <style>
+    :root {
+      --font-body: "Inter", "Aptos", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+      --font-display: "Poppins", "Aptos Display", "Trebuchet MS", "Segoe UI", sans-serif;
+      --bg: #f8f4ff;
+      --bg-gradient: radial-gradient(circle at top left, #f3e8ff 0, #f8f4ff 45%, #fdfbff 100%);
+      --surface: #ffffff;
+      --surface-soft: #faf5ff;
+      --border: #eee4ff;
+      --primary: #8b5cf6;
+      --primary-soft: #f3e8ff;
+      --primary-strong: #6d28d9;
+      --text-main: #2f2548;
+      --text-muted: #746b8d;
+      --error: #c62828;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --shadow-soft: 0 10px 30px rgba(15, 23, 42, 0.08);
+      --shadow-strong: 0 18px 40px rgba(15, 23, 42, 0.18);
+      --transition-fast: 0.18s ease-out;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+    }
+
+    body {
+      font-family: var(--font-body);
+      max-width: 100%;
+      width: min(1700px, 100%);
+      margin: 0 auto;
+      padding: 1.2rem 1.4rem;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-gradient);
+      color: var(--text-main);
+      overflow: hidden;
+    }
+
+    h1 {
+      margin: 0 0 0.5rem 0;
+      font-size: 1.4rem;
+      color: var(--text-main);
+      font-family: var(--font-display);
+      letter-spacing: 0.01em;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      margin-bottom: 1rem;
+    }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      background: var(--surface);
+      border-radius: var(--radius-lg);
+      padding: 1.1rem 1.1rem 0.9rem;
+      margin-bottom: 1rem;
+      min-height: 0;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-soft);
+      overscroll-behavior: contain;
+    }
+
+    .msg {
+      margin-bottom: 0.75rem;
+      display: flex;
+      width: 100%;
+      animation: messageIn 0.2s ease-out;
+    }
+
+    .msg.user {
+      justify-content: flex-end;
+    }
+
+    .msg.assistant {
+      justify-content: flex-start;
+    }
+
+    .msg-bubble {
+      max-width: 92%;
+      padding: 0.55rem 0.75rem;
+      border-radius: 18px;
+      font-size: 0.97rem;
+      line-height: 1.5;
+      position: relative;
+      word-wrap: break-word;
+      word-break: break-word;
+      white-space: pre-wrap;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+      transition: transform var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
+    }
+
+    .msg.user .msg-bubble {
+      background: var(--primary);
+      color: #ffffff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .msg.assistant .msg-bubble {
+      background: #ffffff;
+      color: var(--text-main);
+      border-bottom-left-radius: 4px;
+    }
+
+    .msg.assistant .sources {
+      margin-top: 0.4rem;
+    }
+
+    .msg-typing .msg-bubble {
+      background: var(--surface-soft);
+      color: var(--text-muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .typing-dots {
+      display: inline-flex;
+      gap: 0.2rem;
+    }
+
+    .typing-dots span {
+      width: 4px;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--text-muted);
+      opacity: 0.4;
+      animation: typingPulse 1s infinite ease-in-out;
+    }
+
+    .typing-dots span:nth-child(2) {
+      animation-delay: 0.12s;
+    }
+    .typing-dots span:nth-child(3) {
+      animation-delay: 0.24s;
+    }
+
+    @keyframes typingPulse {
+      0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+      30% { transform: translateY(-2px); opacity: 1; }
+    }
+
+    @keyframes messageIn {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .sources {
+      font-size: 0.82rem;
+      color: #5f5577;
+      margin-top: 0.35rem;
+      padding-left: 0.5rem;
+      border-left: 3px solid #c4b5fd;
+    }
+
+    .sources.empty {
+      border-color: #ccc;
+      color: #888;
+    }
+
+    .error {
+      color: var(--error);
+      margin-top: 0.5rem;
+      font-size: 0.9rem;
+    }
+    .auth-box {
+      background: var(--surface);
+      border-radius: 18px;
+      padding: 1.75rem 1.5rem;
+      border: 1px solid var(--border);
+      max-width: 360px;
+      margin: 2.5rem auto;
+      box-shadow: var(--shadow-soft);
+    }
+
+    .auth-box h2 {
+      margin: 0 0 1rem 0;
+      font-size: 1.2rem;
+    }
+
+    .auth-box input {
+      display: block;
+      width: 100%;
+      padding: 0.6rem 0.8rem;
+      margin-bottom: 0.8rem;
+      border: 1px solid #ccc;
+      border-radius: var(--radius-md);
+      font-size: 1rem;
+      min-height: 40px;
+    }
+
+    .auth-box input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.2);
+    }
+
+    .auth-box button {
+      margin-right: 0.5rem;
+      margin-top: 0.25rem;
+    }
+
+    .auth-error {
+      color: var(--error);
+      font-size: 0.9rem;
+      margin-bottom: 0.5rem;
+    }
+    .tabs {
+      margin-bottom: 1rem;
+      display: inline-flex;
+      padding: 0.18rem;
+      border-radius: 999px;
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+    }
+
+    .tabs button {
+      padding: 0.4rem 0.9rem;
+      margin-right: 0;
+      border: none;
+      background: transparent;
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: 0.95rem;
+      color: var(--text-muted);
+      transition: background-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+    }
+
+    .tabs button.active {
+      background: var(--surface);
+      color: var(--primary-strong);
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.18);
+    }
+    .user-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .user-bar span {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    .brand-logo {
+      height: 64px;
+      width: auto;
+      display: block;
+      object-fit: contain;
+      filter: drop-shadow(0 2px 8px rgba(15, 23, 42, 0.2));
+    }
+
+    .admin-link {
+      padding: 0.6rem 1rem;
+      background: #6b5aa8;
+      color: #fff;
+      border-radius: 999px;
+      text-decoration: none;
+      font-size: 0.95rem;
+      font-family: var(--font-display);
+      transition: background-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+      box-shadow: 0 6px 14px rgba(91, 74, 150, 0.32);
+    }
+
+    .admin-link:hover {
+      background: #5b4a96;
+      transform: translateY(-1px);
+      text-decoration: none;
+    }
+
+    .integration-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.4rem 0.65rem;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      border: 1px solid #d1d5db;
+      color: #4b5563;
+      background: #f9fafb;
+    }
+
+    .integration-chip.connected {
+      border-color: #86efac;
+      background: #f0fdf4;
+      color: #166534;
+    }
+
+    .tool-events {
+      margin-top: 0.45rem;
+      padding: 0.45rem 0.55rem;
+      border-radius: 10px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      font-size: 0.8rem;
+      color: #475569;
+    }
+
+    .tool-events-title {
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+      color: #334155;
+    }
+
+    .chat-layout {
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      gap: 1rem;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .chat-sidebar {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-soft);
+      padding: 0.8rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.7rem;
+      min-height: 0;
+      position: sticky;
+      align-self: start;
+      top: 0.75rem;
+      max-height: calc(100vh - 1.5rem);
+      overflow: hidden;
+    }
+
+    .chat-main {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .chat-form-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-shrink: 0;
+    }
+
+    .monday-chat-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+
+    .monday-chat-toggle input {
+      width: 1.05rem;
+      height: 1.05rem;
+      accent-color: var(--primary);
+      cursor: pointer;
+    }
+
+    .monday-chat-toggle input:disabled + span {
+      opacity: 0.55;
+    }
+
+    .conversation-controls {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+    }
+
+    #new-conversation {
+      width: 100%;
+    }
+
+    .conversation-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+      overflow-y: auto;
+      min-height: 0;
+      flex: 1;
+    }
+
+    .conversation-item {
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 0.5rem 0.55rem;
+      font-size: 0.9rem;
+      color: #4b3f66;
+      background: #f9fafb;
+      cursor: pointer;
+      transition: background-color var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      min-height: 40px;
+    }
+
+    .conversation-item:hover {
+      background: #f3f4f6;
+      transform: translateY(-1px);
+    }
+
+    .conversation-item.active {
+      background: var(--primary-soft);
+      border-color: rgba(124, 58, 237, 0.45);
+      color: var(--primary-strong);
+      font-weight: 600;
+    }
+
+    .conversation-title {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .conversation-delete {
+      border: none;
+      background: transparent;
+      color: #9ca3af;
+      cursor: pointer;
+      font-size: 1rem;
+      line-height: 1;
+      padding: 0.15rem 0.25rem;
+      border-radius: 6px;
+      min-height: auto;
+      box-shadow: none;
+      width: auto !important;
+    }
+
+    .conversation-delete:hover {
+      color: #b91c1c;
+      background: #fee2e2;
+      transform: none;
+      box-shadow: none;
+    }
+
+    #form {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.35rem;
+      position: sticky;
+      bottom: 0;
+      padding-top: 0.4rem;
+      padding-bottom: 0.3rem;
+      background: linear-gradient(to top, rgba(244, 245, 251, 0.98), rgba(244, 245, 251, 0.84));
+      z-index: 10;
+      flex-shrink: 0;
+    }
+
+    #input {
+      flex: 1 1 200px;
+      min-width: 0;
+      padding: 0.7rem 0.85rem;
+      border: 1px solid #ccc;
+      border-radius: 999px;
+      font-size: 1rem;
+      min-height: 42px;
+      background: #ffffff;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+      transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
+    }
+
+    #input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.2);
+      background: #ffffff;
+    }
+
+    button {
+      padding: 0.7rem 1.15rem;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      font-size: 0.98rem;
+      cursor: pointer;
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+      transition: background-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast), opacity var(--transition-fast);
+      box-shadow: 0 8px 20px rgba(124, 58, 237, 0.24);
+      font-family: var(--font-display);
+    }
+
+    button:hover {
+      background: #6d28d9;
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-strong);
+    }
+
+    button:active {
+      transform: translateY(0);
+      box-shadow: 0 4px 12px rgba(124, 58, 237, 0.34);
+    }
+
+    button:disabled {
+      background: #c4b5fd;
+      cursor: not-allowed;
+      opacity: 0.8;
+      box-shadow: none;
+      transform: none;
+    }
+
+    button.secondary {
+      background: #6b5aa8;
+      box-shadow: 0 6px 14px rgba(15, 23, 42, 0.16);
+    }
+
+    button.secondary:hover {
+      background: #5b4a96;
+    }
+
+    #chat-area {
+      display: none;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.45);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      opacity: 0;
+      transition: opacity 0.2s ease-out;
+    }
+
+    .modal-overlay.open {
+      display: flex;
+      opacity: 1;
+    }
+
+    .modal {
+      background: var(--surface);
+      border-radius: 18px;
+      max-width: 920px;
+      width: 100%;
+      max-height: 85vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      box-shadow: var(--shadow-strong);
+      transform: translateY(8px) scale(0.98);
+      opacity: 0;
+      animation: modalIn 0.2s ease-out forwards;
+    }
+
+    @keyframes modalIn {
+      from {
+        transform: translateY(8px) scale(0.98);
+        opacity: 0;
+      }
+      to {
+        transform: translateY(0) scale(1);
+        opacity: 1;
+      }
+    }
+    .modal h2 {
+      margin: 0;
+      padding: 1rem 1.25rem;
+      font-size: 1.1rem;
+      border-bottom: 1px solid #eee;
+    }
+
+    .modal-body {
+      padding: 1rem 1.25rem;
+      overflow: hidden;
+      flex: 1;
+      display: flex;
+      gap: 1rem;
+      min-height: 0;
+    }
+
+    .modal-left {
+      flex: 0 0 280px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .modal-right {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      border: 1px solid #e0e0e0;
+      border-radius: 12px;
+      background: #fafafa;
+      box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.12);
+      min-height: 0;
+    }
+
+    .pdf-preview-wrap {
+      flex: 1 1 45%;
+      min-height: 200px;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+
+    .preview-placeholder {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #888;
+      font-size: 0.95rem;
+      padding: 2rem;
+      text-align: center;
+    }
+
+    .preview-iframe {
+      flex: 1;
+      width: 100%;
+      min-height: 240px;
+      border: none;
+      border-radius: 0;
+    }
+
+    .pdf-text-panel {
+      flex: 1 1 55%;
+      min-height: 140px;
+      display: none;
+      flex-direction: column;
+      gap: 0.45rem;
+      padding: 0.65rem 0.75rem 0.75rem;
+      border-top: 1px solid #e0e0e0;
+      background: #fff;
+      border-radius: 0 0 11px 11px;
+    }
+
+    .pdf-text-panel.open {
+      display: flex;
+    }
+
+    .pdf-text-hint {
+      margin: 0;
+      font-size: 0.8rem;
+      color: #64748b;
+      line-height: 1.35;
+    }
+
+    .pdf-rag-text {
+      width: 100%;
+      flex: 1;
+      min-height: 100px;
+      max-height: 220px;
+      padding: 0.45rem 0.55rem;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-family: inherit;
+      resize: vertical;
+      box-sizing: border-box;
+    }
+
+    .pdf-text-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .pdf-text-source {
+      font-size: 0.75rem;
+      color: #64748b;
+    }
+
+    .pdf-text-footer button {
+      flex-shrink: 0;
+    }
+
+    .modal-footer {
+      padding: 1rem 1.25rem;
+      border-top: 1px solid #eee;
+      display: flex;
+      gap: 0.5rem;
+      justify-content: flex-end;
+    }
+    .file-list {
+      list-style: none;
+      margin: 0 0 1rem 0;
+      padding: 0;
+    }
+
+    .file-list li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.5rem 0.35rem;
+      border-bottom: 1px solid #f0f0f0;
+      cursor: pointer;
+      border-radius: 8px;
+      transition: background-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+      min-height: 40px;
+    }
+
+    .file-list li:hover {
+      background: #f3f4f6;
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
+      transform: translateY(-1px);
+    }
+
+    .file-list li.selected {
+      background: var(--primary-soft);
+      box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.3);
+    }
+    .file-list li:last-child { border-bottom: none; }
+    .file-list .name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .file-list .size {
+      color: #888;
+      font-size: 0.85rem;
+      margin-right: 0.5rem;
+    }
+
+    .file-list button {
+      padding: 0.35rem 0.6rem;
+      font-size: 0.82rem;
+      background: #c62828;
+      cursor: pointer;
+      box-shadow: 0 4px 10px rgba(248, 113, 113, 0.35);
+    }
+
+    .file-list button:hover {
+      background: #b71c1c;
+    }
+
+    .file-list .btn-delete {
+      flex-shrink: 0;
+    }
+
+    .upload-zone {
+      border: 2px dashed #ccc;
+      border-radius: 10px;
+      padding: 1rem;
+      text-align: center;
+      margin-bottom: 1rem;
+      background: #fafafa;
+      transition: border-color var(--transition-fast), background-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+    }
+
+    .upload-zone.dragover {
+      border-color: var(--primary);
+      background: var(--primary-soft);
+      box-shadow: 0 8px 26px rgba(124, 58, 237, 0.22);
+      transform: translateY(-1px);
+    }
+    .upload-zone input[type=file] { display: none; }
+    .knowledge-msg {
+      font-size: 0.9rem;
+      color: #666;
+      margin-bottom: 0.5rem;
+    }
+
+    .knowledge-error {
+      color: var(--error);
+      font-size: 0.9rem;
+      margin-top: 0.5rem;
+    }
+
+    .items-section {
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid #eee;
+    }
+
+    .items-section h3 {
+      margin: 0 0 0.5rem 0;
+      font-size: 0.95rem;
+    }
+
+    .item-list {
+      list-style: none;
+      margin: 0 0 0.75rem 0;
+      padding: 0;
+    }
+
+    .item-list li {
+      padding: 0.45rem 0;
+      border-bottom: 1px solid #f0f0f0;
+      font-size: 0.9rem;
+    }
+
+    .item-list li .item-name {
+      font-weight: 500;
+    }
+
+    .item-list li .item-preview {
+      color: #666;
+      font-size: 0.85rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 220px;
+    }
+
+    .item-list li .item-actions {
+      margin-top: 0.25rem;
+    }
+
+    .item-list li .item-actions button {
+      padding: 0.2rem 0.6rem;
+      font-size: 0.8rem;
+      margin-right: 0.25rem;
+    }
+
+    .item-form {
+      margin-top: 0.5rem;
+    }
+
+    .item-form input,
+    .item-form textarea {
+      width: 100%;
+      padding: 0.45rem 0.55rem;
+      margin-bottom: 0.45rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+
+    .item-form textarea {
+      min-height: 80px;
+      resize: vertical;
+    }
+
+    .item-form .btn-row {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .chat-empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: #9ca3af;
+      font-size: 0.95rem;
+      text-align: center;
+      padding: 1.5rem 1rem;
+    }
+
+    .chat-empty-state strong {
+      color: #6b7280;
+      margin-bottom: 0.3rem;
+      display: block;
+    }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border-radius: 999px;
+      border: 2px solid rgba(148, 163, 184, 0.4);
+      border-top-color: rgba(55, 65, 81, 0.9);
+      animation: spin 0.7s linear infinite;
+    }
+
+    .conversation-loading {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      color: #6b7280;
+      font-size: 0.9rem;
+      padding: 0.45rem 0.2rem 0.1rem;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    @media (max-width: 640px) {
+      html, body {
+        height: auto;
+      }
+
+      body {
+        padding: 1rem 0.75rem 1.25rem;
+        overflow: auto;
+      }
+
+      #messages {
+        border-radius: 14px;
+      }
+
+      .user-bar {
+        align-items: flex-start;
+      }
+
+      .user-bar > h1 {
+        flex: 1 0 100%;
+        margin-bottom: 0.25rem;
+      }
+
+      .brand-logo {
+        height: 48px;
+      }
+
+      .user-bar > span,
+      .user-bar > button,
+      .user-bar > a {
+        font-size: 0.85rem;
+      }
+
+      .chat-layout {
+        grid-template-columns: 1fr;
+        overflow: visible;
+      }
+
+      .chat-sidebar {
+        order: 2;
+        position: static;
+        top: auto;
+        max-height: none;
+        overflow: visible;
+      }
+
+      .chat-main {
+        order: 1;
+        overflow: visible;
+      }
+
+      #form {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      #form .chat-form-actions {
+        width: 100%;
+        justify-content: space-between;
+      }
+
+      #input {
+        border-radius: 999px;
+        width: 100%;
+      }
+
+      #form #send {
+        width: auto;
+        min-width: 8rem;
+        justify-content: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="auth-area">
+    <div class="auth-box">
+      <h2>Вход в аккаунт</h2>
+      <p class="subtitle" style="margin-top:0">История чата привязана к вашему аккаунту. При следующем входе вы её увидите.</p>
+      <div class="tabs">
+        <button type="button" id="tab-login" class="active">Вход</button>
+        <button type="button" id="tab-register">Регистрация</button>
+      </div>
+      <div id="auth-error" class="auth-error"></div>
+      <form id="auth-form">
+        <input type="text" id="auth-username" placeholder="Логин" autocomplete="username">
+        <input type="password" id="auth-password" placeholder="Пароль" autocomplete="current-password">
+        <button type="submit" id="auth-submit">Войти</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="chat-area">
+    <div class="user-bar">
+      <img id="brand-logo" class="brand-logo" src="/branding/logo" alt="Orlanda Engineering">
+      <span id="user-name"></span>
+      <button type="button" id="btn-documents" class="secondary">Документы</button>
+      <span id="monday-status" class="integration-chip">Monday: not connected</span>
+      <button type="button" id="monday-connect" class="secondary">Connect Monday</button>
+      <button type="button" id="monday-disconnect" class="secondary" style="display:none">Disconnect Monday</button>
+      <a href="/admin" id="btn-admin" class="admin-link">Админ-панель</a>
+      <button type="button" id="logout" class="secondary">Выйти</button>
+    </div>
+    <div class="chat-layout">
+      <aside class="chat-sidebar">
+        <div class="conversation-controls">
+          <button type="button" id="new-conversation" class="secondary">Новый диалог</button>
+        </div>
+        <ul id="conversation-list" class="conversation-list"></ul>
+      </aside>
+      <div class="chat-main">
+        <p class="subtitle">Ответы по базе знаний (документы компании). Включите Monday только когда нужны доски и задачи.</p>
+        <div id="messages"></div>
+        <form id="form">
+          <input type="text" id="input" placeholder="Задайте вопрос..." autocomplete="off">
+          <div class="chat-form-actions">
+            <label class="monday-chat-toggle" id="use-monday-label" title="Снимите галочку — обычный чат только с базой знаний (RAG).">
+              <input type="checkbox" id="use-monday-chat" disabled>
+              <span>Monday</span>
+            </label>
+            <button type="submit" id="send">Отправить</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div id="knowledge-modal" class="modal-overlay">
+    <div class="modal">
+      <h2>Документы в базе знаний</h2>
+      <div class="modal-body">
+        <div class="modal-left">
+          <p class="knowledge-msg">Клик по файлу — просмотр справа. Добавьте или удалите файлы.</p>
+          <ul id="knowledge-file-list" class="file-list"></ul>
+          <div id="upload-zone" class="upload-zone">
+            Перетащите PDF сюда или <button type="button" id="upload-browse">выберите файл</button>
+            <input type="file" id="upload-input" accept=".pdf">
+          </div>
+          <div class="items-section">
+            <h3>Текстовые блоки</h3>
+            <p class="knowledge-msg">Блоки с названием и текстом тоже попадают в RAG.</p>
+            <ul id="knowledge-item-list" class="item-list"></ul>
+            <div id="item-form-box" class="item-form">
+              <input type="text" id="item-name" placeholder="Название блока" maxlength="256">
+              <textarea id="item-content" placeholder="Текст (можно вставить из буфера)" rows="4"></textarea>
+              <div class="btn-row">
+                <button type="button" id="item-save">Создать блок</button>
+                <button type="button" id="item-cancel" class="secondary" style="display:none">Отмена</button>
+              </div>
+            </div>
+          </div>
+          <div id="knowledge-error" class="knowledge-error"></div>
+        </div>
+        <div class="modal-right">
+          <div class="pdf-preview-wrap">
+            <div id="preview-placeholder" class="preview-placeholder">Выберите файл в списке слева, чтобы просмотреть PDF</div>
+            <iframe id="preview-iframe" class="preview-iframe" style="display:none" title="Просмотр PDF"></iframe>
+          </div>
+          <div id="pdf-text-panel" class="pdf-text-panel">
+            <p class="pdf-text-hint knowledge-msg">Текст ниже используется для поиска (RAG). PDF выше — только для просмотра.</p>
+            <textarea id="pdf-rag-text" class="pdf-rag-text" placeholder="Текст для индекса…"></textarea>
+            <div class="pdf-text-footer">
+              <span id="pdf-text-source" class="pdf-text-source"></span>
+              <button type="button" id="pdf-text-save" class="secondary">Сохранить текст</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="knowledge-reindex" class="secondary">Обновить индекс</button>
+        <button type="button" id="knowledge-close">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const AUTH_TOKEN_KEY = "rag_agent_token";
+    const AUTH_USER_KEY = "rag_agent_username";
+
+    const authArea = document.getElementById("auth-area");
+    const chatArea = document.getElementById("chat-area");
+    const authForm = document.getElementById("auth-form");
+    const authUsername = document.getElementById("auth-username");
+    const authPassword = document.getElementById("auth-password");
+    const authError = document.getElementById("auth-error");
+    const authSubmit = document.getElementById("auth-submit");
+    const tabLogin = document.getElementById("tab-login");
+    const tabRegister = document.getElementById("tab-register");
+    const form = document.getElementById("form");
+    const input = document.getElementById("input");
+    const sendBtn = document.getElementById("send");
+    const messagesEl = document.getElementById("messages");
+    const userNameEl = document.getElementById("user-name");
+    const conversationList = document.getElementById("conversation-list");
+    const newConversationBtn = document.getElementById("new-conversation");
+    const logoutBtn = document.getElementById("logout");
+    const btnDocuments = document.getElementById("btn-documents");
+    const mondayStatusEl = document.getElementById("monday-status");
+    const mondayConnectBtn = document.getElementById("monday-connect");
+    const mondayDisconnectBtn = document.getElementById("monday-disconnect");
+    const useMondayChat = document.getElementById("use-monday-chat");
+    const USE_MONDAY_KEY = "rag_agent_use_monday_chat";
+    const knowledgeModal = document.getElementById("knowledge-modal");
+    const knowledgeFileList = document.getElementById("knowledge-file-list");
+    const uploadZone = document.getElementById("upload-zone");
+    const uploadBrowse = document.getElementById("upload-browse");
+    const uploadInput = document.getElementById("upload-input");
+    const knowledgeError = document.getElementById("knowledge-error");
+    const knowledgeReindex = document.getElementById("knowledge-reindex");
+    const knowledgeClose = document.getElementById("knowledge-close");
+    const previewPlaceholder = document.getElementById("preview-placeholder");
+    const previewIframe = document.getElementById("preview-iframe");
+    const pdfTextPanel = document.getElementById("pdf-text-panel");
+    const pdfRagText = document.getElementById("pdf-rag-text");
+    const pdfTextSave = document.getElementById("pdf-text-save");
+    const pdfTextSource = document.getElementById("pdf-text-source");
+    const knowledgeItemList = document.getElementById("knowledge-item-list");
+    const itemNameInput = document.getElementById("item-name");
+    const itemContentInput = document.getElementById("item-content");
+    const itemSaveBtn = document.getElementById("item-save");
+    const itemCancelBtn = document.getElementById("item-cancel");
+    let previewBlobUrl = null;
+    let selectedPdfPath = null;
+    let editingItemId = null;
+    const CONV_KEY_PREFIX = "rag_agent_conversations_";
+    let currentConversationId = null;
+    let conversations = [];
+
+    function scrollChatToBottom() {
+      try {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      } catch (_) {}
+    }
+
+    function clearChatEmptyState() {
+      messagesEl.querySelectorAll(".chat-empty-state").forEach((el) => el.remove());
+    }
+
+    function setConversationLoading(isLoading) {
+      if (isLoading) {
+        clearChatEmptyState();
+        messagesEl.innerHTML = "<div class='conversation-loading'><span class='spinner'></span><span>Загрузка диалога...</span></div>";
+        sendBtn.disabled = true;
+        input.disabled = true;
+        useMondayChat.disabled = true;
+      } else {
+        const loadingEl = messagesEl.querySelector(".conversation-loading");
+        if (loadingEl) loadingEl.remove();
+        sendBtn.disabled = false;
+        input.disabled = false;
+        refreshMondayStatus();
+      }
+    }
+
+
+    function getToken() { return localStorage.getItem(AUTH_TOKEN_KEY); }
+    function setToken(t, u) {
+      localStorage.setItem(AUTH_TOKEN_KEY, t);
+      localStorage.setItem(AUTH_USER_KEY, u || "");
+    }
+    function clearToken() {
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+      localStorage.removeItem(AUTH_USER_KEY);
+    }
+
+    function authHeaders() {
+      const t = getToken();
+      return t ? { "Authorization": "Bearer " + t, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+    }
+
+    function showAuth() {
+      authArea.style.display = "block";
+      chatArea.style.display = "none";
+    }
+    function showChat() {
+      authArea.style.display = "none";
+      chatArea.style.display = "flex";
+      const username = localStorage.getItem(AUTH_USER_KEY) || "";
+      userNameEl.textContent = "Вы: " + username;
+      initConversations(username);
+      refreshMondayStatus();
+    }
+
+    async function refreshMondayStatus() {
+      const token = getToken();
+      if (!token) return;
+      try {
+        const r = await fetch("/integrations/monday/status", { headers: { "Authorization": "Bearer " + token } });
+        if (r.status === 401) { clearToken(); showAuth(); return; }
+        const data = await r.json().catch(() => ({}));
+        const connected = !!data.connected;
+        mondayStatusEl.classList.toggle("connected", connected);
+        mondayStatusEl.textContent = connected ? "Monday: connected" : "Monday: not connected";
+        mondayConnectBtn.style.display = connected ? "none" : "inline-flex";
+        mondayDisconnectBtn.style.display = connected ? "inline-flex" : "none";
+        useMondayChat.disabled = !connected;
+        if (!connected) {
+          useMondayChat.checked = false;
+        } else {
+          const saved = localStorage.getItem(USE_MONDAY_KEY);
+          useMondayChat.checked = saved === "true";
+        }
+      } catch (_) {}
+    }
+
+    useMondayChat.addEventListener("change", () => {
+      try {
+        localStorage.setItem(USE_MONDAY_KEY, useMondayChat.checked ? "true" : "false");
+      } catch (_) {}
+    });
+
+    function loadConversations(username) {
+      const raw = localStorage.getItem(CONV_KEY_PREFIX + username);
+      if (!raw) {
+        return [
+          { id: "default", title: "Основной диалог" },
+        ];
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      } catch (_) {}
+      return [
+        { id: "default", title: "Основной диалог" },
+      ];
+    }
+
+    function saveConversations(username) {
+      try {
+        localStorage.setItem(CONV_KEY_PREFIX + username, JSON.stringify(conversations));
+      } catch (_) {}
+    }
+
+    function renderConversationSelect() {
+      conversationList.innerHTML = "";
+      conversations.forEach(conv => {
+        const item = document.createElement("li");
+        item.className = "conversation-item" + (conv.id === currentConversationId ? " active" : "");
+        item.dataset.id = conv.id;
+        item.title = conv.title || conv.id;
+        const title = document.createElement("span");
+        title.className = "conversation-title";
+        title.textContent = conv.title || conv.id;
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "conversation-delete";
+        del.dataset.id = conv.id;
+        del.title = "Удалить диалог";
+        del.setAttribute("aria-label", "Удалить диалог");
+        del.textContent = "×";
+        item.appendChild(title);
+        item.appendChild(del);
+        conversationList.appendChild(item);
+      });
+    }
+
+    function initConversations(username) {
+      if (!username) return;
+      conversations = loadConversations(username);
+      if (!currentConversationId || !conversations.find(c => c.id === currentConversationId)) {
+        currentConversationId = conversations[0].id;
+      }
+      renderConversationSelect();
+    }
+
+    async function loadChatHistory() {
+      const token = getToken();
+      if (!token) return;
+      try {
+        setConversationLoading(true);
+        let url = "/chat/history";
+        if (currentConversationId) {
+          url += "?conversation_id=" + encodeURIComponent(currentConversationId);
+        }
+        const r = await fetch(url, { headers: { "Authorization": "Bearer " + token } });
+        if (r.status === 401) { clearToken(); showAuth(); return; }
+        if (!r.ok) return;
+        const data = await r.json().catch(() => ({}));
+        const list = data.messages || [];
+        messagesEl.innerHTML = "";
+        const staggerMs = list.length > 120 ? 6 : list.length > 60 ? 10 : 16;
+        for (const msg of list) {
+          addMessage(msg.content || "", msg.role || "user", null);
+          if (list.length > 1) {
+            await new Promise((resolve) => setTimeout(resolve, staggerMs));
+          }
+        }
+        if (!list.length) showChatEmptyState();
+      } catch (_) {}
+      finally { setConversationLoading(false); }
+    }
+
+    async function checkSession() {
+      const token = getToken();
+      if (!token) { showAuth(); return; }
+      try {
+        const r = await fetch("/auth/me", { headers: { "Authorization": "Bearer " + token } });
+        if (r.ok) {
+          const data = await r.json().catch(() => ({}));
+          if (data && data.username) {
+            localStorage.setItem(AUTH_USER_KEY, data.username);
+          }
+          showChat();
+          await loadChatHistory();
+          return;
+        }
+      } catch (_) {}
+      clearToken();
+      showAuth();
+    }
+
+    let isRegister = false;
+    tabLogin.addEventListener("click", () => { isRegister = false; tabLogin.classList.add("active"); tabRegister.classList.remove("active"); authSubmit.textContent = "Войти"; authError.textContent = ""; });
+    tabRegister.addEventListener("click", () => { isRegister = true; tabRegister.classList.add("active"); tabLogin.classList.remove("active"); authSubmit.textContent = "Зарегистрироваться"; authError.textContent = ""; });
+
+    authForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      authError.textContent = "";
+      const url = isRegister ? "/auth/register" : "/auth/login";
+      try {
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: authUsername.value.trim(), password: authPassword.value }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          authError.textContent = data.detail || "Ошибка";
+          return;
+        }
+        setToken(data.token, data.username);
+        showChat();
+        userNameEl.textContent = "Вы: " + data.username;
+        await loadChatHistory();
+      } catch (err) {
+        authError.textContent = err.message || "Нет связи с сервером";
+      }
+    });
+
+    logoutBtn.addEventListener("click", () => {
+      clearToken();
+      showAuth();
+      messagesEl.innerHTML = "";
+      currentConversationId = null;
+      conversations = [];
+    });
+
+    mondayConnectBtn.addEventListener("click", async () => {
+      const token = getToken();
+      if (!token) { showAuth(); return; }
+      try {
+        const r = await fetch("/integrations/monday/connect", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + token },
+        });
+        if (r.status === 401) { clearToken(); showAuth(); return; }
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || !data.authorize_url) {
+          showError(data.detail || "Не удалось начать подключение Monday");
+          return;
+        }
+        window.location.href = data.authorize_url;
+      } catch (e) {
+        showError(e.message || "Нет связи с сервером");
+      }
+    });
+
+    mondayDisconnectBtn.addEventListener("click", async () => {
+      const token = getToken();
+      if (!token) { showAuth(); return; }
+      try {
+        const r = await fetch("/integrations/monday/disconnect", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + token },
+        });
+        if (r.status === 401) { clearToken(); showAuth(); return; }
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          showError(data.detail || "Не удалось отключить Monday");
+          return;
+        }
+        await refreshMondayStatus();
+      } catch (e) {
+        showError(e.message || "Нет связи с сервером");
+      }
+    });
+
+    function normalizeAssistantContent(text) {
+      if (!text || typeof text !== "string") return "";
+      const s = text.trim();
+      if (s.startsWith("{\"response_content\":") || (s.startsWith("{") && s.includes("response_content"))) {
+        try {
+          const parsed = JSON.parse(s);
+          if (parsed && typeof parsed.response_content === "string") return parsed.response_content;
+        } catch (_) {}
+      }
+      return text;
+    }
+
+    function formatBold(text) {
+      if (!text) return "";
+      const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      return esc(text).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
+    }
+
+    function addMessage(text, role, sources) {
+      return addMessageWithEvents(text, role, sources, []);
+    }
+
+    function addMessageWithEvents(text, role, sources, toolEvents) {
+      function formatSources(sources) {
+        if (!sources || !sources.length) {
+          return "Источники: не использовались";
+        }
+        const grouped = new Map();
+        for (const s of sources) {
+          if (!s || !s.file) continue;
+          const file = String(s.file);
+          let pageRaw = s.page;
+          let pageNum = null;
+          if (pageRaw !== undefined && pageRaw !== null && pageRaw !== "?" && pageRaw !== "") {
+            const n = Number(pageRaw);
+            if (Number.isFinite(n)) {
+              pageNum = n + 1; // convert 0-based to 1-based
+            }
+          }
+          if (!grouped.has(file)) {
+            grouped.set(file, new Set());
+          }
+          if (pageNum !== null && pageNum > 0) {
+            grouped.get(file).add(pageNum);
+          }
+        }
+        if (!grouped.size) {
+          return "Источники: не использовались";
+        }
+        const parts = [];
+        for (const [file, pages] of grouped.entries()) {
+          if (!pages.size) {
+            parts.push(file);
+          } else {
+            const sorted = Array.from(pages).sort((a, b) => a - b);
+            parts.push(file + " (стр. " + sorted.join(", ") + ")");
+          }
+        }
+        return "Источники: " + parts.join(", ");
+      }
+
+      clearChatEmptyState();
+      const wrap = document.createElement("div");
+      wrap.className = "msg " + role;
+
+      const bubble = document.createElement("div");
+      bubble.className = "msg-bubble";
+
+      if (role === "assistant") {
+        const normalized = normalizeAssistantContent(text);
+        bubble.innerHTML = formatBold(normalized);
+      } else {
+        bubble.textContent = text;
+      }
+
+      wrap.appendChild(bubble);
+      if (role === "assistant" && sources !== undefined && sources !== null) {
+        const srcEl = document.createElement("div");
+        srcEl.className = "sources" + (sources && sources.length ? "" : " empty");
+        const textSources = formatSources(sources);
+        srcEl.textContent = textSources;
+        bubble.appendChild(srcEl);
+      }
+      if (role === "assistant" && Array.isArray(toolEvents) && toolEvents.length) {
+        const eventsEl = document.createElement("div");
+        eventsEl.className = "tool-events";
+        const titleEl = document.createElement("div");
+        titleEl.className = "tool-events-title";
+        titleEl.textContent = "Agent activity";
+        eventsEl.appendChild(titleEl);
+        toolEvents.forEach((event) => {
+          const line = document.createElement("div");
+          const mark = event.status === "error" ? "✖" : (event.status === "success" ? "✓" : "•");
+          line.textContent = mark + " " + (event.message || event.tool_name || "Tool event");
+          eventsEl.appendChild(line);
+        });
+        bubble.appendChild(eventsEl);
+      }
+      messagesEl.appendChild(wrap);
+      scrollChatToBottom();
+    }
+
+    function showError(msg) {
+      clearChatEmptyState();
+      const wrap = document.createElement("div");
+      wrap.className = "msg assistant";
+      const bubble = document.createElement("div");
+      bubble.className = "msg-bubble";
+      const el = document.createElement("div");
+      el.className = "error";
+      el.textContent = "Ошибка: " + msg;
+      bubble.appendChild(el);
+      wrap.appendChild(bubble);
+      messagesEl.appendChild(wrap);
+      scrollChatToBottom();
+    }
+
+    function showChatEmptyState() {
+      if (messagesEl.childElementCount > 0) return;
+      const box = document.createElement("div");
+      box.className = "chat-empty-state";
+      box.innerHTML = "<strong>Начните диалог с агентом</strong><span>Например: \"Как работает онбординг в компании?\"</span>";
+      messagesEl.appendChild(box);
+    }
+
+    let typingMessageEl = null;
+
+    function showTypingIndicator() {
+      if (typingMessageEl) return;
+      clearChatEmptyState();
+      const wrap = document.createElement("div");
+      wrap.className = "msg assistant msg-typing";
+
+      const bubble = document.createElement("div");
+      bubble.className = "msg-bubble";
+      bubble.setAttribute("aria-label", "Ассистент печатает…");
+
+      const label = document.createElement("span");
+      label.textContent = "Ассистент печатает";
+
+      const dots = document.createElement("span");
+      dots.className = "typing-dots";
+      dots.innerHTML = "<span></span><span></span><span></span>";
+
+      bubble.appendChild(label);
+      bubble.appendChild(dots);
+      wrap.appendChild(bubble);
+      typingMessageEl = wrap;
+      messagesEl.appendChild(wrap);
+      scrollChatToBottom();
+    }
+
+    function hideTypingIndicator() {
+      if (typingMessageEl && typingMessageEl.parentNode) {
+        typingMessageEl.parentNode.removeChild(typingMessageEl);
+      }
+      typingMessageEl = null;
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      const token = getToken();
+      if (!token) { showAuth(); return; }
+
+      addMessage(text, "user", null);
+      input.value = "";
+      const useMonday = useMondayChat.checked && !useMondayChat.disabled;
+      sendBtn.disabled = true;
+      useMondayChat.disabled = true;
+      hideTypingIndicator();
+      showTypingIndicator();
+
+      try {
+        let url = "/chat";
+        if (currentConversationId) {
+          url += "?conversation_id=" + encodeURIComponent(currentConversationId);
+        }
+        const res = await fetch(url, {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({ message: text, use_monday: useMonday }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          clearToken();
+          showAuth();
+          return;
+        }
+        if (!res.ok) {
+          showError(data.detail || res.statusText);
+          return;
+        }
+        addMessageWithEvents(data.response, "assistant", data.sources || [], data.tool_events || []);
+      } catch (err) {
+        showError(err.message || "Нет связи с сервером.");
+      } finally {
+        hideTypingIndicator();
+        sendBtn.disabled = false;
+        refreshMondayStatus();
+      }
+    });
+
+    function fmtSize(n) {
+      if (n < 1024) return n + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+      return (n / (1024 * 1024)).toFixed(1) + " MB";
+    }
+
+    async function loadKnowledgeFiles() {
+      knowledgeError.textContent = "";
+      const token = getToken();
+      if (!token) return;
+      try {
+        const r = await fetch("/knowledge/files", { headers: { "Authorization": "Bearer " + token } });
+        if (r.status === 401) { clearToken(); showAuth(); return; }
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) { knowledgeError.textContent = data.detail || "Ошибка"; return; }
+        const files = data.files || [];
+        knowledgeFileList.innerHTML = "";
+        if (files.length === 0) {
+          knowledgeFileList.innerHTML = "<li class='knowledge-msg'>Нет PDF-файлов. Добавьте файл ниже.</li>";
+          hidePreview();
+        } else {
+          files.forEach(f => {
+            const li = document.createElement("li");
+            li.dataset.path = f.path || f.name;
+            li.innerHTML = "<span class='name' title='" + (f.path || f.name) + "'>" + (f.name || f.path) + "</span><span class='size'>" + fmtSize(f.size || 0) + "</span><button type='button' class='btn-delete' data-path='" + (f.path || f.name) + "'>Удалить</button>";
+            li.addEventListener("click", (e) => {
+              if (e.target.classList.contains("btn-delete")) return;
+              showPreview(li.dataset.path);
+              knowledgeFileList.querySelectorAll("li[data-path]").forEach(el => el.classList.remove("selected"));
+              li.classList.add("selected");
+            });
+            knowledgeFileList.appendChild(li);
+          });
+          knowledgeFileList.querySelectorAll(".btn-delete").forEach(btn => {
+            btn.addEventListener("click", (e) => { e.stopPropagation(); deleteKnowledgeFile(btn.dataset.path); });
+          });
+        }
+      } catch (e) {
+        knowledgeError.textContent = e.message || "Нет связи с сервером";
+      }
+    }
+
+    function revokePreviewUrl() {
+      if (previewBlobUrl) {
+        URL.revokeObjectURL(previewBlobUrl);
+        previewBlobUrl = null;
+      }
+    }
+
+    function hidePreview() {
+      revokePreviewUrl();
+      selectedPdfPath = null;
+      if (pdfTextPanel) {
+        pdfTextPanel.classList.remove("open");
+        pdfRagText.value = "";
+        pdfTextSource.textContent = "";
+      }
+      previewIframe.style.display = "none";
+      previewIframe.src = "";
+      previewPlaceholder.style.display = "flex";
+    }
+
+    async function loadPdfTextForSelection(relPath) {
+      if (!pdfRagText || !pdfTextSource) return;
+      pdfTextSource.textContent = "";
+      pdfRagText.value = "";
+      pdfRagText.placeholder = "Загрузка…";
+      pdfRagText.disabled = true;
+      const token = getToken();
+      if (!token) return;
+      try {
+        const r = await fetch("/knowledge/files/text?path=" + encodeURIComponent(relPath), {
+          headers: { "Authorization": "Bearer " + token },
+        });
+        if (r.status === 401) { clearToken(); showAuth(); return; }
+        if (!r.ok) {
+          const data = await r.json().catch(() => ({}));
+          knowledgeError.textContent = data.detail || "Не удалось загрузить текст для RAG";
+          return;
+        }
+        const data = await r.json();
+        pdfRagText.value = data.text || "";
+        pdfTextSource.textContent = data.source === "override" ? "Источник: сохранённый текст" : "Источник: извлечено из PDF";
+        selectedPdfPath = data.path || relPath;
+      } catch (e) {
+        knowledgeError.textContent = e.message || "Ошибка загрузки текста";
+      } finally {
+        pdfRagText.disabled = false;
+        pdfRagText.placeholder = "Текст для индекса…";
+      }
+    }
+
+    async function savePdfRagText() {
+      const path = selectedPdfPath;
+      if (!path) return;
+      knowledgeError.textContent = "";
+      const token = getToken();
+      if (!token) return;
+      pdfTextSave.disabled = true;
+      try {
+        const r = await fetch("/knowledge/files/text", {
+          method: "PUT",
+          headers: authHeaders(),
+          body: JSON.stringify({ path: path, text: pdfRagText.value }),
+        });
+        if (r.status === 401) { clearToken(); showAuth(); return; }
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          knowledgeError.textContent = data.detail || "Не удалось сохранить текст";
+          return;
+        }
+        const newPath = data.path || path;
+        if (newPath !== path) {
+          await loadKnowledgeFiles();
+          knowledgeFileList.querySelectorAll("li[data-path]").forEach((el) => {
+            el.classList.toggle("selected", el.dataset.path === newPath);
+          });
+          await showPreview(newPath);
+        } else {
+          await loadPdfTextForSelection(newPath);
+        }
+        knowledgeError.textContent = "Текст сохранён, индекс обновлён.";
+      } catch (e) {
+        knowledgeError.textContent = e.message || "Ошибка сохранения";
+      } finally {
+        pdfTextSave.disabled = false;
+      }
+    }
+
+    async function showPreview(path) {
+      revokePreviewUrl();
+      selectedPdfPath = path;
+      if (pdfTextPanel) pdfTextPanel.classList.add("open");
+      loadPdfTextForSelection(path);
+      previewPlaceholder.style.display = "none";
+      previewIframe.style.display = "block";
+      previewIframe.src = "";
+      knowledgeError.textContent = "";
+      const token = getToken();
+      if (!token) return;
+      try {
+        const r = await fetch("/knowledge/files/preview?path=" + encodeURIComponent(path), {
+          headers: { "Authorization": "Bearer " + token },
+        });
+        if (r.status === 401) { clearToken(); showAuth(); knowledgeModal.classList.remove("open"); return; }
+        if (!r.ok) { knowledgeError.textContent = "Не удалось загрузить просмотр"; return; }
+        const blob = await r.blob();
+        previewBlobUrl = URL.createObjectURL(blob);
+        previewIframe.src = previewBlobUrl;
+      } catch (e) {
+        knowledgeError.textContent = e.message || "Ошибка загрузки";
+        previewPlaceholder.style.display = "flex";
+        previewIframe.style.display = "none";
+      }
+    }
+
+    async function loadKnowledgeItems() {
+      knowledgeError.textContent = "";
+      const token = getToken();
+      if (!token) return;
+      try {
+        const r = await fetch("/knowledge/items", { headers: { "Authorization": "Bearer " + token } });
+        if (r.status === 401) { clearToken(); showAuth(); return; }
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) { knowledgeError.textContent = data.detail || "Ошибка"; return; }
+        const items = data.items || [];
+        knowledgeItemList.innerHTML = "";
+        if (items.length === 0) {
+          knowledgeItemList.innerHTML = "<li class='knowledge-msg'>Нет текстовых блоков. Создайте блок ниже.</li>";
+        } else {
+          items.forEach(it => {
+            const li = document.createElement("li");
+            const preview = (it.content || "").slice(0, 60) + ((it.content || "").length > 60 ? "…" : "");
+            li.innerHTML = "<span class='item-name'>" + escapeHtml(it.name || "Без названия") + "</span><br><span class='item-preview'>" + escapeHtml(preview) + "</span><div class='item-actions'><button type='button' class='item-edit' data-id='" + escapeHtml(it.id) + "'>Изменить</button><button type='button' class='item-delete' data-id='" + escapeHtml(it.id) + "'>Удалить</button></div>";
+            knowledgeItemList.appendChild(li);
+          });
+          knowledgeItemList.querySelectorAll(".item-edit").forEach(btn => btn.addEventListener("click", () => startEditItem(btn.dataset.id)));
+          knowledgeItemList.querySelectorAll(".item-delete").forEach(btn => btn.addEventListener("click", () => deleteKnowledgeItem(btn.dataset.id)));
+        }
+      } catch (e) {
+        knowledgeError.textContent = e.message || "Ошибка загрузки блоков";
+      }
+    }
+    function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+    function startEditItem(id) {
+      editingItemId = id;
+      const token = getToken();
+      if (!token) return;
+      fetch("/knowledge/items/" + encodeURIComponent(id), { headers: { "Authorization": "Bearer " + token } })
+        .then(r => r.json())
+        .then(it => {
+          itemNameInput.value = it.name || "";
+          itemContentInput.value = it.content || "";
+          itemSaveBtn.textContent = "Сохранить";
+          itemCancelBtn.style.display = "inline-block";
+        })
+        .catch(() => { knowledgeError.textContent = "Не удалось загрузить блок"; });
+    }
+
+    function cancelEditItem() {
+      editingItemId = null;
+      itemNameInput.value = "";
+      itemContentInput.value = "";
+      itemSaveBtn.textContent = "Создать блок";
+      itemCancelBtn.style.display = "none";
+    }
+
+    async function saveKnowledgeItem() {
+      const name = itemNameInput.value.trim();
+      if (!name) { knowledgeError.textContent = "Введите название"; return; }
+      knowledgeError.textContent = "";
+      const token = getToken();
+      if (!token) return;
+      try {
+        if (editingItemId) {
+          const r = await fetch("/knowledge/items/" + encodeURIComponent(editingItemId), {
+            method: "PATCH",
+            headers: authHeaders(),
+            body: JSON.stringify({ name: name, content: itemContentInput.value }),
+          });
+          if (r.status === 401) { clearToken(); showAuth(); return; }
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) { knowledgeError.textContent = data.detail || "Ошибка"; return; }
+          cancelEditItem();
+        } else {
+          const r = await fetch("/knowledge/items", {
+            method: "POST",
+            headers: authHeaders(),
+            body: JSON.stringify({ name: name, content: itemContentInput.value }),
+          });
+          if (r.status === 401) { clearToken(); showAuth(); return; }
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) { knowledgeError.textContent = data.detail || "Ошибка"; return; }
+          itemNameInput.value = "";
+          itemContentInput.value = "";
+        }
+        loadKnowledgeItems();
+      } catch (e) {
+        knowledgeError.textContent = e.message || "Ошибка";
+      }
+    }
+
+    async function deleteKnowledgeItem(id) {
+      knowledgeError.textContent = "";
+      try {
+        const r = await fetch("/knowledge/items/" + encodeURIComponent(id), {
+          method: "DELETE",
+          headers: { "Authorization": "Bearer " + getToken() },
+        });
+        if (r.status === 401) { clearToken(); showAuth(); knowledgeModal.classList.remove("open"); return; }
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) { knowledgeError.textContent = data.detail || "Ошибка"; return; }
+        if (editingItemId === id) cancelEditItem();
+        loadKnowledgeItems();
+      } catch (e) {
+        knowledgeError.textContent = e.message || "Ошибка удаления";
+      }
+    }
+
+    itemSaveBtn.addEventListener("click", saveKnowledgeItem);
+    itemCancelBtn.addEventListener("click", cancelEditItem);
+    pdfTextSave.addEventListener("click", savePdfRagText);
+
+    async function deleteKnowledgeFile(path) {
+      knowledgeError.textContent = "";
+      try {
+        const r = await fetch("/knowledge/files?path=" + encodeURIComponent(path), {
+          method: "DELETE",
+          headers: { "Authorization": "Bearer " + getToken() },
+        });
+        if (r.status === 401) { clearToken(); showAuth(); knowledgeModal.classList.remove("open"); return; }
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) { knowledgeError.textContent = data.detail || "Ошибка"; return; }
+        hidePreview();
+        loadKnowledgeFiles();
+      } catch (e) {
+        knowledgeError.textContent = e.message || "Ошибка удаления";
+      }
+    }
+
+    async function uploadKnowledgeFile(file) {
+      if (!file || !file.name.toLowerCase().endsWith(".pdf")) {
+        knowledgeError.textContent = "Выберите файл .pdf";
+        return;
+      }
+      knowledgeError.textContent = "";
+      const fd = new FormData();
+      fd.append("file", file);
+      try {
+        const r = await fetch("/knowledge/upload", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + getToken() },
+          body: fd,
+        });
+        if (r.status === 401) { clearToken(); showAuth(); knowledgeModal.classList.remove("open"); return; }
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) { knowledgeError.textContent = data.detail || "Ошибка"; return; }
+        uploadInput.value = "";
+        loadKnowledgeFiles();
+      } catch (e) {
+        knowledgeError.textContent = e.message || "Ошибка загрузки";
+      }
+    }
+
+    async function reindexKnowledge() {
+      knowledgeError.textContent = "Обновляем индекс…";
+      try {
+        const r = await fetch("/knowledge/reindex", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + getToken() },
+        });
+        if (r.status === 401) { clearToken(); showAuth(); knowledgeModal.classList.remove("open"); return; }
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) { knowledgeError.textContent = data.detail || "Ошибка"; return; }
+        loadKnowledgeFiles();
+        knowledgeError.textContent = "Индекс обновлён.";
+      } catch (e) {
+        knowledgeError.textContent = e.message || "Ошибка";
+      }
+    }
+
+    btnDocuments.addEventListener("click", () => {
+      knowledgeModal.classList.add("open");
+      loadKnowledgeFiles();
+      loadKnowledgeItems();
+    });
+
+    conversationList.addEventListener("click", async (e) => {
+      const deleteBtn = e.target.closest(".conversation-delete");
+      const username = localStorage.getItem(AUTH_USER_KEY) || "";
+      if (deleteBtn) {
+        if (!username) return;
+        const convId = deleteBtn.dataset.id;
+        const targetConv = conversations.find(c => c.id === convId);
+        if (!targetConv) return;
+        const ok = confirm("Удалить диалог \"" + (targetConv.title || convId) + "\" навсегда?");
+        if (!ok) return;
+        try {
+          const res = await fetch("/chat/conversation?conversation_id=" + encodeURIComponent(convId), {
+            method: "DELETE",
+            headers: { "Authorization": "Bearer " + getToken() },
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.status === 401) {
+            clearToken();
+            showAuth();
+            return;
+          }
+          if (!res.ok) {
+            showError(data.detail || "Не удалось удалить диалог");
+            return;
+          }
+        } catch (err) {
+          showError(err.message || "Не удалось удалить диалог");
+          return;
+        }
+
+        conversations = conversations.filter(c => c.id !== convId);
+        if (!conversations.length) {
+          conversations = [{ id: "default", title: "Основной диалог" }];
+        }
+        if (currentConversationId === convId) {
+          currentConversationId = conversations[0].id;
+          messagesEl.innerHTML = "";
+          showChatEmptyState();
+          await loadChatHistory();
+        }
+        saveConversations(username);
+        renderConversationSelect();
+        return;
+      }
+
+      const target = e.target.closest(".conversation-item");
+      if (!target) return;
+      if (!username) return;
+      currentConversationId = target.dataset.id;
+      renderConversationSelect();
+      messagesEl.innerHTML = "";
+      await loadChatHistory();
+    });
+
+    newConversationBtn.addEventListener("click", async () => {
+      const username = localStorage.getItem(AUTH_USER_KEY) || "";
+      if (!username) return;
+      const title = prompt("Название нового диалога:", "Новый диалог");
+      if (title === null) return;
+      const trimmed = title.trim() || "Новый диалог";
+      const id = "c_" + Date.now().toString(36);
+      conversations.push({ id, title: trimmed });
+      currentConversationId = id;
+      saveConversations(username);
+      renderConversationSelect();
+      messagesEl.innerHTML = "";
+      showChatEmptyState();
+      input.focus();
+    });
+    knowledgeClose.addEventListener("click", () => { hidePreview(); knowledgeModal.classList.remove("open"); });
+    knowledgeModal.addEventListener("click", (e) => { if (e.target === knowledgeModal) { hidePreview(); knowledgeModal.classList.remove("open"); } });
+    knowledgeReindex.addEventListener("click", reindexKnowledge);
+    uploadBrowse.addEventListener("click", () => uploadInput.click());
+    uploadInput.addEventListener("change", () => { if (uploadInput.files[0]) uploadKnowledgeFile(uploadInput.files[0]); });
+    uploadZone.addEventListener("dragover", (e) => { e.preventDefault(); uploadZone.classList.add("dragover"); });
+    uploadZone.addEventListener("dragleave", () => uploadZone.classList.remove("dragover"));
+    uploadZone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      uploadZone.classList.remove("dragover");
+      const file = e.dataTransfer.files[0];
+      if (file) uploadKnowledgeFile(file);
+    });
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("monday_connected") === "1" || params.get("monday_error")) {
+      history.replaceState({}, document.title, window.location.pathname);
+    }
+    checkSession();
+    showChatEmptyState();
+  </script>
+</body>
+</html>
