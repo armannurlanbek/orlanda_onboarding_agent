@@ -24,6 +24,14 @@ In this project there are **two different “memories”**. They do different jo
   2. Appends your **new** message.
   3. Runs the graph (calls tools, gets model reply).
   4. Saves the updated state (including the new assistant reply) back for that thread_id.
+- **History compaction (anti-forgetting):**
+  - The API tracks semantic turns (only user/assistant messages).
+  - If a conversation exceeds `RAG_MAX_HISTORY_MESSAGES`, it no longer wipes the whole chat.
+  - Instead, it:
+    1. Keeps the last `RAG_HISTORY_KEEP_LAST_MESSAGES` turns.
+    2. Summarizes older turns with a dedicated LLM summarization prompt.
+    3. Seeds the thread with a **system summary** + recent turns.
+  - This preserves long-term context per chat while controlling token growth.
 
 So “long-term” conversation memory = **SqliteSaver + same thread_id over time**. “Short-term” = **InMemorySaver** (same thread_id only until the process exits).
 
@@ -34,9 +42,11 @@ So “long-term” conversation memory = **SqliteSaver + same thread_id over tim
 | What              | Where it lives              | Long-term? | Controlled by        |
 |-------------------|-----------------------------|------------|-----------------------|
 | Company knowledge | FAISS index (index_store)   | Yes        | Re-run indexing       |
-| Chat history      | Checkpointer (RAM or SQLite)| SQLite: yes; RAM: no | `CHECKPOINT_DB`, `thread_id` |
+| Chat history      | Checkpointer (RAM or SQLite)| SQLite: yes; RAM: no | `CHECKPOINT_DB`, `thread_id`, history compaction env vars |
 
 - **Same thread_id** (e.g. one user, or one Slack channel) = one continuous conversation; the model sees all previous messages in that thread.
 - **New thread_id** = new conversation; no previous messages (but the **same** RAG index is used for search).
 
-No other “long-term memory” is used in this agent: no extra database of facts, no user profiles—only the RAG index and the checkpointer state per thread.
+**Website login (bearer token)** is separate from the agent checkpointer: sessions are stored in PostgreSQL **`auth_sessions`** (API requires **`DATABASE_URL`**).
+
+No other agent-side “long-term memory” is used beyond the RAG index and the checkpointer state per thread.

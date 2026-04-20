@@ -47,50 +47,20 @@ python -m rag_agent.api
 ## Переменные окружения
 
 - **OPENAI_API_KEY** — обязателен для RAG-эмбеддингов (индексация и поиск).
-- **ANTHROPIC_API_KEY** — обязателен, если `RAG_AGENT_MODEL` начинается с `anthropic:`.
 - **CHECKPOINT_DB** — путь к файлу SQLite для истории (например `./data/checkpoints.db`); если не задан, история только в памяти.
 - **RAG_AGENT_MODEL**, **RAG_AGENT_MAX_TOKENS**, **RAG_AGENT_API_PORT** — опционально (см. `config.py`).
-  - Пример для Sonnet: `RAG_AGENT_MODEL=anthropic:claude-sonnet-4-6`
+  - Рекомендуемое значение: `RAG_AGENT_MODEL=openai:gpt-4o-mini`
 - Для контроля 429 можно уменьшить контекст:
   - `RAG_RETRIEVE_TOP_K` (по умолчанию `4`)
   - `RAG_MAX_CHARS_PER_CHUNK` (по умолчанию `1200`)
   - `RAG_MAX_TOTAL_CONTEXT_CHARS` (по умолчанию `6000`)
+- Для истории чата:
+  - `RAG_MAX_HISTORY_MESSAGES` — порог количества user/assistant сообщений в одном диалоге
+  - `RAG_HISTORY_KEEP_LAST_MESSAGES` — сколько последних сообщений оставить после сжатия истории
+  - `RAG_HISTORY_SUMMARY_MAX_TOKEN_LIMIT` — токен-бюджет суммаризации старых сообщений
 
 ### Переключение модели без перезапуска (admin)
 
 - **GET `/admin/model`** — вернуть текущую модель.
-- **PUT `/admin/model`** — поменять модель в рантайме. Тело: `{"model":"anthropic:claude-sonnet-4-6"}`.
-
-## Monday.com Connector
-
-Поддерживается опциональный per-user коннектор Monday:
-- Пользователь может **подключить** или **не подключать** Monday.
-- Подключение выполняется через OAuth в браузере.
-- После подключения в чате становятся доступны Monday tools (прямой вызов Monday API).
-- В ответе отображается блок **Agent activity** с событиями вызовов Monday tools.
-
-### Что настроить
-
-Добавьте в `.env`:
-
-```bash
-MONDAY_CLIENT_ID=...
-MONDAY_CLIENT_SECRET=...
-MONDAY_OAUTH_REDIRECT_URI=http://127.0.0.1:8000/integrations/monday/callback
-MONDAY_OAUTH_SCOPES=me:read boards:read boards:write
-MONDAY_ENCRYPTION_KEY=...
-```
-
-Важно: `MONDAY_OAUTH_REDIRECT_URI` должен совпадать с redirect URL в приложении Monday.
-
-### Проверка локально
-
-1. Запустите API: `python -m rag_agent.api`
-2. Войдите в веб-интерфейс.
-3. Нажмите **Connect Monday**.
-4. Пройдите OAuth consent в Monday.
-5. Вернитесь в чат и задайте Monday-запрос (например про boards/items).
-6. Убедитесь, что:
-   - статус стал `Monday: connected`
-   - в сообщении ассистента отображается `Agent activity`
-7. Нажмите **Disconnect Monday** и проверьте, что Monday tools больше не используются.
+- **PUT `/admin/model`** — поменять модель в рантайме. Только OpenAI-модели. Тело: `{"model":"openai:gpt-4o-mini"}`.
+- **GET `/admin/history/threads`** — диагностический срез по историям чатов (какие диалоги близки к порогу сжатия/превышают его).

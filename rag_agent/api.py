@@ -9,6 +9,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Form, Query
 from fastapi.responses import HTMLResponse, FileResponse
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from rag_agent.agent import (
@@ -20,23 +22,28 @@ from rag_agent.agent import (
     get_active_model_name,
     set_active_model,
 )
-from rag_agent.auth import login as auth_login, register as auth_register, resolve_token, get_user_role
+from rag_agent.auth import (
+    get_user_role,
+    invalidate_token,
+    login as auth_login,
+    register as auth_register,
+    resolve_token,
+)
 from rag_agent.config import (
     API_HOST,
     API_PORT,
+    RAG_ENABLE_RATE_LIMIT_FALLBACK,
+    RAG_FALLBACK_MODEL,
+    RAG_HISTORY_KEEP_LAST_MESSAGES,
+    RAG_HISTORY_SUMMARY_MAX_TOKEN_LIMIT,
     RAG_AGENT_DIR,
     RAG_MAX_HISTORY_MESSAGES,
+    RAG_MAX_PASSWORD_LENGTH,
+    RAG_MAX_USER_MESSAGE_CHARS,
+    RAG_MIN_PASSWORD_LENGTH,
+    RAG_USERNAME_MAX_LEN,
     require_runtime_keys,
 )
-from rag_agent.monday_oauth import build_authorize_url, exchange_code_for_token, monday_oauth_enabled
-from rag_agent.monday_store import (
-    consume_oauth_state,
-    create_oauth_state,
-    delete_user_credentials as monday_delete_user_credentials,
-    get_user_credentials as monday_get_user_credentials,
-    save_user_credentials as monday_save_user_credentials,
-)
-from rag_agent.monday_tools import build_monday_tools
 from rag_agent.indexing import (
     KNOWLEDGE_BASE_DIR,
     build_index,
@@ -72,6 +79,9 @@ from rag_agent.chat_log import (
 
 STATIC_DIR = RAG_AGENT_DIR / "static"
 PROJECT_DIR = RAG_AGENT_DIR.parent
+FRONTEND_DIR = RAG_AGENT_DIR / "frontend"
+FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
+FRONTEND_INDEX_PATH = FRONTEND_DIST_DIR / "index.html"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -82,15 +92,72 @@ def _is_rate_limit_error(err: Exception) -> bool:
     return "rate_limit" in txt or "rate limit" in txt or "error code: 429" in txt
 
 
+def _is_provider_overloaded_error(err: Exception) -> bool:
+    txt = str(err).lower()
+    return "overloaded" in txt or "error code: 529" in txt
+
+
+def _is_structured_output_validation_error(err: Exception) -> bool:
+    txt = str(err).lower()
+    return "structuredoutputvalidationerror" in txt or "failed to parse structured output" in txt
+
+
+def _extract_agent_response_text(response: dict) -> str:
+    """
+    Extract assistant text from both structured and non-structured agent responses.
+    """
+    structured = response.get("structured_response")
+    if structured is not None:
+        val = getattr(structured, "response_content", None)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+
+    messages = response.get("messages")
+    if isinstance(messages, list) and messages:
+        for msg in reversed(messages):
+            role = str(getattr(msg, "type", None) or getattr(msg, "role", None) or "").lower()
+            if role not in {"assistant", "ai"}:
+                continue
+            content = getattr(msg, "content", "")
+            if isinstance(content, list):
+                text_parts = []
+                for c in content:
+                    if isinstance(c, dict):
+                        t = c.get("text")
+                        if t:
+                            text_parts.append(str(t))
+                    elif c:
+                        text_parts.append(str(c))
+                merged = " ".join(p.strip() for p in text_parts if p and p.strip()).strip()
+                if merged:
+                    return merged
+            elif isinstance(content, str) and content.strip():
+                return content.strip()
+            elif content:
+                s = str(content).strip()
+                if s:
+                    return s
+
+    output = response.get("output")
+    if isinstance(output, str) and output.strip():
+        return output.strip()
+    return ""
+
+
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=10000)
-    # When false (default), chat uses only RAG tools even if Monday is connected.
-    use_monday: bool = False
 
 
 class LoginRequest(BaseModel):
-    username: str = Field(..., min_length=1, max_length=64)
-    password: str = Field(..., min_length=1)
+    username: str = Field(..., min_length=1, max_length=RAG_USERNAME_MAX_LEN)
+    password: str = Field(..., min_length=1, max_length=RAG_MAX_PASSWORD_LENGTH)
+
+
+class RegisterRequest(BaseModel):
+    """Registration: password length matches server policy (letter + digit checked in auth)."""
+
+    username: str = Field(..., min_length=2, max_length=RAG_USERNAME_MAX_LEN)
+    password: str = Field(..., min_length=RAG_MIN_PASSWORD_LENGTH, max_length=RAG_MAX_PASSWORD_LENGTH)
 
 
 class ChatResponse(BaseModel):
@@ -102,10 +169,6 @@ class ChatResponse(BaseModel):
 class AuthResponse(BaseModel):
     token: str
     username: str
-
-
-class MondayConnectResponse(BaseModel):
-    authorize_url: str
 
 
 class PdfMetadataUpdate(BaseModel):
@@ -138,13 +201,32 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="RAG Agent API", lifespan=lifespan)
 
 
+def _serve_frontend_or_legacy(legacy_path: Path) -> str:
+    """Serve built React app if present, otherwise fallback to legacy static HTML."""
+    if FRONTEND_INDEX_PATH.is_file():
+        return FRONTEND_INDEX_PATH.read_text(encoding="utf-8")
+    if legacy_path.is_file():
+        return legacy_path.read_text(encoding="utf-8")
+    raise HTTPException(status_code=404, detail="UI bundle not found")
+
+
+def _dist_asset_path(relative_path: str) -> Path | None:
+    """Resolve one dist asset and ensure it stays inside frontend/dist directory."""
+    clean = (relative_path or "").strip().replace("\\", "/")
+    if not clean or ".." in clean or clean.startswith("/"):
+        return None
+    target = (FRONTEND_DIST_DIR / clean).resolve()
+    try:
+        target.relative_to(FRONTEND_DIST_DIR.resolve())
+    except ValueError:
+        return None
+    return target
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
-    """Serve the local chat UI."""
-    path = STATIC_DIR / "index.html"
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="index.html not found")
-    return path.read_text(encoding="utf-8")
+    """Serve application shell (React if built, legacy otherwise)."""
+    return _serve_frontend_or_legacy(STATIC_DIR / "index.html")
 
 
 @app.get("/health")
@@ -155,11 +237,47 @@ def health():
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_index():
-    """Serve the admin panel UI. Log data is protected by auth on /admin/logs."""
-    path = STATIC_DIR / "admin.html"
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="admin.html not found")
-    return path.read_text(encoding="utf-8")
+    """Serve admin route shell for the frontend app."""
+    return _serve_frontend_or_legacy(STATIC_DIR / "admin.html")
+
+
+@app.get("/auth", response_class=HTMLResponse)
+def auth_index():
+    """Serve auth route shell for SPA frontend."""
+    return _serve_frontend_or_legacy(STATIC_DIR / "index.html")
+
+
+@app.get("/chat", response_class=HTMLResponse)
+def chat_index():
+    """Serve chat route shell for SPA frontend."""
+    return _serve_frontend_or_legacy(STATIC_DIR / "index.html")
+
+
+@app.get("/components", response_class=HTMLResponse)
+def components_index():
+    """Serve components route shell for SPA frontend."""
+    return _serve_frontend_or_legacy(STATIC_DIR / "index.html")
+
+
+@app.get("/assets/{asset_path:path}")
+def frontend_asset(asset_path: str):
+    """Serve built frontend assets from frontend/dist/assets."""
+    target = _dist_asset_path(f"assets/{asset_path}")
+    if not target or not target.is_file():
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return FileResponse(target)
+
+
+@app.get("/favicon.ico")
+def frontend_favicon():
+    """Serve frontend favicon if available, fallback to legacy static favicon."""
+    dist_favicon = _dist_asset_path("favicon.ico")
+    if dist_favicon and dist_favicon.is_file():
+        return FileResponse(dist_favicon)
+    legacy_favicon = STATIC_DIR / "favicon.ico"
+    if legacy_favicon.is_file():
+        return FileResponse(legacy_favicon)
+    raise HTTPException(status_code=404, detail="favicon not found")
 
 
 @app.get("/branding/logo")
@@ -305,6 +423,103 @@ def admin_documents_metadata(authorization: str | None = Header(default=None)):
     return {"pdfs": pdfs, "items": items}
 
 
+@app.get("/admin/history/threads")
+def admin_history_threads(
+    authorization: str | None = Header(default=None),
+    max_threads: int = Query(default=200, ge=1, le=2000),
+    scan_checkpoints: int = Query(default=5000, ge=100, le=50000),
+    near_ratio: float = Query(default=0.8, ge=0.1, le=1.0),
+):
+    """
+    Inspect existing chat threads and report history pressure (near/over compaction threshold).
+    Read-only diagnostics endpoint for admins.
+    """
+    _require_admin(authorization)
+    cp = getattr(agent, "checkpointer", None)
+    list_fn = getattr(cp, "list", None) if cp is not None else None
+    if not callable(list_fn):
+        return {
+            "threshold": RAG_MAX_HISTORY_MESSAGES,
+            "near_ratio": near_ratio,
+            "total_threads": 0,
+            "near_limit": 0,
+            "over_limit": 0,
+            "threads": [],
+            "warning": "Checkpointer does not support thread listing in this runtime.",
+        }
+
+    # We dedupe by thread_id while scanning newest checkpoints first.
+    discovered_thread_ids: list[str] = []
+    seen = set()
+    scanned = 0
+    for item in list_fn(None, limit=scan_checkpoints):
+        scanned += 1
+        conf = getattr(item, "config", None) or {}
+        confg = conf.get("configurable", {}) if isinstance(conf, dict) else {}
+        thread_id = str(confg.get("thread_id") or "").strip()
+        if not thread_id or thread_id in seen:
+            continue
+        seen.add(thread_id)
+        discovered_thread_ids.append(thread_id)
+        if len(discovered_thread_ids) >= max_threads:
+            break
+
+    threshold = max(0, int(RAG_MAX_HISTORY_MESSAGES))
+    near_threshold = max(1, int(threshold * float(near_ratio))) if threshold > 0 else 0
+    threads: list[dict] = []
+    near_count = 0
+    over_count = 0
+
+    for thread_id in discovered_thread_ids:
+        cfg = {"configurable": {"thread_id": thread_id}}
+        semantic_count = 0
+        load_error = ""
+        try:
+            state = agent.get_state(cfg)
+            values = getattr(state, "values", None) or {}
+            messages = values.get("messages", []) or []
+            semantic_count = _semantic_message_count(messages)
+        except Exception as e:
+            load_error = str(e)
+        if threshold > 0 and semantic_count >= near_threshold:
+            near_count += 1
+        if threshold > 0 and semantic_count > threshold:
+            over_count += 1
+
+        username, conversation_id = thread_id, "default"
+        if ":" in thread_id:
+            username, conversation_id = thread_id.split(":", 1)
+
+        status = "ok"
+        if threshold > 0 and semantic_count > threshold:
+            status = "over_limit"
+        elif threshold > 0 and semantic_count >= near_threshold:
+            status = "near_limit"
+
+        threads.append(
+            {
+                "thread_id": thread_id,
+                "username": username,
+                "conversation_id": conversation_id,
+                "semantic_messages": semantic_count,
+                "status": status,
+                "error": load_error,
+            }
+        )
+
+    threads.sort(key=lambda x: x.get("semantic_messages", 0), reverse=True)
+    return {
+        "threshold": threshold,
+        "near_ratio": near_ratio,
+        "near_threshold": near_threshold if threshold > 0 else 0,
+        "scanned_checkpoints": scanned,
+        "total_threads": len(threads),
+        "near_limit": near_count,
+        "over_limit": over_count,
+        "threads": threads,
+    }
+
+
 def _get_username(authorization: str | None = Header(default=None)) -> str:
     """Require Bearer token and return username; 401 if invalid."""
     if not authorization or not authorization.startswith("Bearer "):
@@ -333,8 +548,220 @@ def _make_thread_id(username: str, conversation_id: str | None) -> str:
     return f"{username}:{conv}"
 
 
+def _semantic_message_count(messages) -> int:
+    """Count only user/assistant turns (ignore tool/system chatter)."""
+    total = 0
+    for m in messages or []:
+        role_raw = None
+        if isinstance(m, dict):
+            role_raw = m.get("role") or m.get("type")
+        else:
+            role_raw = getattr(m, "role", None) or getattr(m, "type", None)
+            if not role_raw and hasattr(m, "__class__"):
+                name = m.__class__.__name__.lower()
+                if "ai" in name or "assistant" in name:
+                    role_raw = "assistant"
+                elif "human" in name or "user" in name:
+                    role_raw = "user"
+        role = str(role_raw or "").strip().lower()
+        if role in {"assistant", "ai", "user", "human"}:
+            total += 1
+    return total
+
+
+def _semantic_messages_only(messages) -> list[dict[str, str]]:
+    """Return only user/assistant messages in normalized dict shape."""
+    normalized: list[dict[str, str]] = []
+    for m in messages or []:
+        role_raw = None
+        content_raw = ""
+        if isinstance(m, dict):
+            role_raw = m.get("role") or m.get("type")
+            content_raw = m.get("content") or ""
+        else:
+            role_raw = getattr(m, "role", None) or getattr(m, "type", None)
+            content_raw = getattr(m, "content", "") or ""
+            if not role_raw and hasattr(m, "__class__"):
+                name = m.__class__.__name__.lower()
+                if "ai" in name or "assistant" in name:
+                    role_raw = "assistant"
+                elif "human" in name or "user" in name:
+                    role_raw = "user"
+
+        role = str(role_raw or "").strip().lower()
+        if role not in {"assistant", "ai", "user", "human"}:
+            continue
+        normalized.append(
+            {
+                "role": "assistant" if role in {"assistant", "ai"} else "user",
+                "content": str(content_raw or "").strip(),
+            }
+        )
+    return [m for m in normalized if m["content"]]
+
+
+def _summarize_messages(
+    messages: list[dict[str, str]],
+    model_name: str | None,
+) -> str:
+    """
+    Summarize older dialog turns with a direct LLM summarization prompt.
+    Returns empty string on failure (best-effort path).
+    """
+    if not messages:
+        return ""
+    chosen_model = (model_name or get_active_model_name() or "").strip()
+    if not chosen_model:
+        return ""
+    try:
+        llm = init_chat_model(
+            model=chosen_model,
+            temperature=0.0,
+            max_tokens=700,
+            timeout=60,
+        )
+        max_chars = max(1200, RAG_HISTORY_SUMMARY_MAX_TOKEN_LIMIT * 4)
+        transcript_lines: list[str] = []
+        used_chars = 0
+        for msg in messages:
+            role = "Assistant" if str(msg.get("role") or "").lower() == "assistant" else "User"
+            content = str(msg.get("content") or "").strip()
+            if not content:
+                continue
+            line = f"{role}: {content}"
+            if used_chars + len(line) > max_chars:
+                remaining = max_chars - used_chars
+                if remaining <= 0:
+                    break
+                line = line[:remaining]
+            transcript_lines.append(line)
+            used_chars += len(line)
+            if used_chars >= max_chars:
+                break
+        transcript = "\n".join(transcript_lines).strip()
+        if not transcript:
+            return ""
+
+        prompt = (
+            "Summarize the older part of this conversation for future assistant turns. "
+            "Keep it concise and factual. Capture user goals, constraints, decisions, "
+            "preferences, and unresolved questions. Do not invent facts.\n\n"
+            "Return plain text only."
+        )
+        resp = llm.invoke(
+            [
+                SystemMessage(content=prompt),
+                HumanMessage(content=f"Conversation transcript:\n{transcript}"),
+            ]
+        )
+        content = getattr(resp, "content", "")
+        if isinstance(content, list):
+            merged_parts: list[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                    if text:
+                        merged_parts.append(str(text))
+                elif part:
+                    merged_parts.append(str(part))
+            return "\n".join(merged_parts).strip()
+        return str(content or "").strip()
+    except Exception:
+        logger.exception("History summarization failed")
+        return ""
+
+
+def _compact_conversation_history(runtime_agent, config: dict, model_name: str | None) -> bool:
+    """
+    Compact long history per conversation instead of dropping everything.
+    Keeps latest turns and stores summary of older turns as a system message.
+    """
+    get_state = getattr(runtime_agent, "get_state", None)
+    update_state = getattr(runtime_agent, "update_state", None)
+    if not callable(get_state) or not callable(update_state) or RAG_MAX_HISTORY_MESSAGES <= 0:
+        return False
+
+    state = get_state(config)
+    values = getattr(state, "values", None) or {}
+    history_messages = values.get("messages", []) or []
+    semantic_messages = _semantic_messages_only(history_messages)
+    if len(semantic_messages) <= RAG_MAX_HISTORY_MESSAGES:
+        return False
+
+    keep_last = max(2, min(RAG_HISTORY_KEEP_LAST_MESSAGES, RAG_MAX_HISTORY_MESSAGES))
+    recent_turns = semantic_messages[-keep_last:]
+    older_turns = semantic_messages[:-keep_last]
+    summary = _summarize_messages(older_turns, model_name=model_name)
+
+    thread_id = str(((config or {}).get("configurable") or {}).get("thread_id") or "").strip()
+    if thread_id:
+        delete_conversation_state(thread_id)
+
+    seed_messages: list[dict[str, str]] = []
+    if summary:
+        seed_messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "Conversation summary (older turns):\n"
+                    f"{summary}\n\n"
+                    "Use this summary as prior context, then rely on the explicit recent turns below."
+                ),
+            }
+        )
+    seed_messages.extend(recent_turns)
+    if not seed_messages:
+        return False
+
+    try:
+        update_state(config, {"messages": seed_messages})
+    except TypeError:
+        update_state({"messages": seed_messages}, config=config)
+    return True
+
+
+def _ensure_assistant_turn_persisted(runtime_agent, config: dict, content: str) -> None:
+    """
+    Best-effort guard: some tool-heavy runs may not persist final assistant text
+    in `messages` history. Append one assistant message if missing.
+    """
+    text = str(content or "").strip()
+    if not text:
+        return
+
+    get_state = getattr(runtime_agent, "get_state", None)
+    update_state = getattr(runtime_agent, "update_state", None)
+    if not callable(update_state):
+        return
+
+    try:
+        if callable(get_state):
+            state = get_state(config)
+            values = getattr(state, "values", None) or {}
+            messages = values.get("messages", []) or []
+            if messages:
+                last = messages[-1]
+                if isinstance(last, dict):
+                    last_role = str(last.get("role") or last.get("type") or "").lower()
+                    last_content = str(last.get("content") or "")
+                else:
+                    last_role = str(getattr(last, "role", None) or getattr(last, "type", None) or "").lower()
+                    last_content = str(getattr(last, "content", "") or "")
+                if last_role in {"assistant", "ai"} and last_content.strip() == text:
+                    return
+        # Most common langgraph signature.
+        try:
+            update_state(config, {"messages": [{"role": "assistant", "content": text}]})
+        except TypeError:
+            # Compatibility fallback for other signatures.
+            update_state({"messages": [{"role": "assistant", "content": text}]}, config=config)
+    except Exception:
+        # Best-effort only; never break chat response.
+        return
+
+
 @app.post("/auth/register", response_model=AuthResponse)
-def register(body: LoginRequest):
+def register(body: RegisterRequest):
     """Create account; returns token and username. thread_id = username so history is per user."""
     ok, result = auth_register(body.username.strip(), body.password)
     if not ok:
@@ -351,6 +778,14 @@ def login(body: LoginRequest):
     return AuthResponse(token=result, username=body.username.strip())
 
 
+@app.post("/auth/logout")
+def logout(authorization: str | None = Header(default=None)):
+    """Invalidate the current bearer token (server-side session row when using PostgreSQL)."""
+    if authorization and authorization.startswith("Bearer "):
+        invalidate_token(authorization[7:].strip())
+    return {"ok": True}
+
+
 @app.get("/auth/me")
 def me(authorization: str | None = Header(default=None)):
     """Return current user and role if token valid."""
@@ -358,73 +793,53 @@ def me(authorization: str | None = Header(default=None)):
     return {"username": username, "role": get_user_role(username)}
 
 
-@app.get("/integrations/monday/status")
-def monday_status(authorization: str | None = Header(default=None)):
-    """Return Monday connection status for current user."""
-    username = _get_username(authorization)
-    creds = monday_get_user_credentials(username)
-    connected = bool(creds and creds.get("access_token"))
-    return {"connected": connected, "account": creds.get("account") if connected else None}
-
-
-@app.post("/integrations/monday/connect", response_model=MondayConnectResponse)
-def monday_connect(authorization: str | None = Header(default=None)):
-    """Start Monday OAuth flow and return authorize URL."""
-    username = _get_username(authorization)
-    if not monday_oauth_enabled():
-        raise HTTPException(status_code=400, detail="Monday integration is not configured.")
-    state = create_oauth_state(username)
-    return MondayConnectResponse(authorize_url=build_authorize_url(state))
-
-
-@app.get("/integrations/monday/callback", response_class=HTMLResponse)
-def monday_callback(code: str | None = None, state: str | None = None, error: str | None = None):
-    """Handle Monday OAuth callback."""
-    if error:
-        return HTMLResponse(
-            content=f"<html><body><script>window.location.href='/?monday_error={error}';</script></body></html>"
-        )
-    if not code or not state:
-        raise HTTPException(status_code=400, detail="Missing code/state.")
-    username = consume_oauth_state(state)
-    if not username:
-        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state.")
-    token_payload = exchange_code_for_token(code)
-    monday_save_user_credentials(
-        username=username,
-        payload={
-            "access_token": token_payload.get("access_token"),
-            "refresh_token": token_payload.get("refresh_token"),
-            "expires_in": token_payload.get("expires_in"),
-            "scope": token_payload.get("scope"),
-            "token_type": token_payload.get("token_type"),
-            "connected_at": time.time(),
-            "account": token_payload.get("account"),
-        },
-    )
-    logger.info("Monday connected for user=%s", username)
-    return HTMLResponse(
-        content="<html><body><script>window.location.href='/?monday_connected=1';</script></body></html>"
-    )
-
-
-@app.post("/integrations/monday/disconnect")
-def monday_disconnect(authorization: str | None = Header(default=None)):
-    """Disconnect Monday for current user."""
-    username = _get_username(authorization)
-    monday_delete_user_credentials(username)
-    logger.info("Monday disconnected for user=%s", username)
-    return {"ok": True}
-
-
 def _messages_to_history(messages) -> list[dict]:
     """Convert agent state messages to [{role, content}, ...] for frontend (user/assistant only)."""
+    def _extract_response_content_fallback(payload) -> str:
+        """Try to recover assistant text from structured payload shapes."""
+        if payload is None:
+            return ""
+        if isinstance(payload, str):
+            s = payload.strip()
+            if s.startswith("{") and "response_content" in s:
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, dict):
+                        return str(parsed.get("response_content") or "")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            return ""
+
+        if isinstance(payload, dict):
+            # Most explicit shapes first.
+            if isinstance(payload.get("response_content"), str):
+                return payload.get("response_content") or ""
+            parsed = payload.get("parsed")
+            if isinstance(parsed, dict) and isinstance(parsed.get("response_content"), str):
+                return parsed.get("response_content") or ""
+            for key in ("data", "additional_kwargs", "kwargs", "value"):
+                nested = payload.get(key)
+                if nested is not None:
+                    val = _extract_response_content_fallback(nested)
+                    if val:
+                        return val
+        return ""
+
+    def normalize_role(value: str | None) -> str:
+        v = str(value or "").strip().lower()
+        if v in {"ai", "assistant"}:
+            return "assistant"
+        if v in {"human", "user"}:
+            return "user"
+        # Fallback to user for unknown role labels.
+        return "user"
+
     out = []
     for m in messages or []:
         if isinstance(m, dict):
             if m.get("type") in ("tool", "system") or m.get("role") in ("tool", "system"):
                 continue
-            role = m.get("role") or m.get("type", "user")
+            role = normalize_role(m.get("role") or m.get("type", "user"))
             content = m.get("content") or m.get("data", {}).get("content", "") or ""
         else:
             if getattr(m, "type", None) in ("tool", "system"):
@@ -436,10 +851,24 @@ def _messages_to_history(messages) -> list[dict]:
             if not role and hasattr(m, "__class__"):
                 name = m.__class__.__name__.lower()
                 role = "assistant" if "ai" in name or "assistant" in name else "user"
-            role = "assistant" if role in ("ai", "assistant") else "user"
+            role = normalize_role(role)
+            if not content:
+                # Some structured-output assistant messages keep text in parsed/kwargs fields.
+                content = (
+                    _extract_response_content_fallback(getattr(m, "additional_kwargs", None))
+                    or _extract_response_content_fallback(getattr(m, "kwargs", None))
+                    or _extract_response_content_fallback(getattr(m, "data", None))
+                )
         if isinstance(content, list):
             content = " ".join(
                 (c.get("text", "") if isinstance(c, dict) else str(c) for c in content)
+            )
+        if isinstance(content, dict):
+            content = (
+                _extract_response_content_fallback(content)
+                or _extract_response_content_fallback(content.get("data"))
+                or content.get("content", "")
+                or ""
             )
         content = str(content)
         # Agent may store assistant reply as JSON with response_content; extract plain text for history
@@ -450,6 +879,9 @@ def _messages_to_history(messages) -> list[dict]:
                     content = str(parsed["response_content"] or "")
             except (json.JSONDecodeError, TypeError):
                 pass
+        if role == "assistant" and not str(content).strip():
+            # Skip empty assistant placeholders/tool-call stubs in history UI.
+            continue
         out.append({"role": role, "content": content})
     return out
 
@@ -485,9 +917,19 @@ def chat(
     """
     Send a message; agent reply + sources. Requires login.
     thread_id = your username, so when you come back you get your conversation history (if CHECKPOINT_DB is set).
-    Set body.use_monday=true to attach Monday tools when the user has connected Monday; default is RAG-only.
     """
     username = _get_username(authorization)
+    user_message = (body.message or "").strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Сообщение не должно быть пустым")
+    if RAG_MAX_USER_MESSAGE_CHARS > 0 and len(user_message) > RAG_MAX_USER_MESSAGE_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Сообщение слишком длинное ({len(user_message)} символов). "
+                f"Максимум: {RAG_MAX_USER_MESSAGE_CHARS}."
+            ),
+        )
     try:
         tool_events: list[dict] = []
         def on_tool_event(event: dict):
@@ -503,83 +945,128 @@ def chat(
             )
 
         extra_tools = []
-        creds = monday_get_user_credentials(username)
-        access_token = str((creds or {}).get("access_token") or "")
-        if body.use_monday and access_token:
-            on_tool_event(
-                {
-                    "source": "monday",
-                    "tool_name": "integration",
-                    "status": "start",
-                    "message": "Monday integration connected",
-                    "ts": int(time.time() * 1000),
-                }
-            )
-            extra_tools = build_monday_tools(access_token=access_token, on_event=on_tool_event)
-            if extra_tools:
-                on_tool_event(
-                    {
-                        "source": "monday",
-                        "tool_name": "integration",
-                        "status": "success",
-                        "message": f"Loaded {len(extra_tools)} Monday tools",
-                        "ts": int(time.time() * 1000),
-                    }
-                )
-            else:
-                on_tool_event(
-                    {
-                        "source": "monday",
-                        "tool_name": "integration",
-                        "status": "error",
-                        "message": "Monday tools unavailable",
-                        "ts": int(time.time() * 1000),
-                    }
-                )
+        selected_model_name: str | None = None
 
         thread_id = _make_thread_id(username, conversation_id)
         config = {"configurable": {"thread_id": thread_id}}
-        runtime_agent = build_agent(extra_tools=extra_tools)
+        runtime_agent = build_agent(extra_tools=extra_tools, model_name=selected_model_name)
         # Prevent unlimited growth of persisted thread context, which can trigger
         # strict provider TPM limits (especially on Anthropic plans).
         if RAG_MAX_HISTORY_MESSAGES > 0:
             try:
-                get_state = getattr(runtime_agent, "get_state", None)
-                if callable(get_state):
-                    state = get_state(config)
-                    values = getattr(state, "values", None) or {}
-                    history_messages = values.get("messages", []) or []
-                    if len(history_messages) > RAG_MAX_HISTORY_MESSAGES:
-                        delete_conversation_state(thread_id)
-                        on_tool_event(
-                            {
-                                "source": "system",
-                                "tool_name": "history_guard",
-                                "status": "success",
-                                "message": (
-                                    "Conversation history was reset to avoid "
-                                    "token limit overflow."
-                                ),
-                                "ts": int(time.time() * 1000),
-                            }
-                        )
+                if _compact_conversation_history(runtime_agent, config, model_name=selected_model_name):
+                    on_tool_event(
+                        {
+                            "source": "system",
+                            "tool_name": "history_guard",
+                            "status": "success",
+                            "message": (
+                                "Conversation history was compacted: older turns summarized, recent turns kept."
+                            ),
+                            "ts": int(time.time() * 1000),
+                        }
+                    )
             except Exception:
                 # Best-effort only; chat should continue even if introspection fails.
                 pass
         response = runtime_agent.invoke(
-            {"messages": [{"role": "user", "content": body.message}]},
+            {"messages": [{"role": "user", "content": user_message}]},
             config=config,
             context=Context(user_id=username),
         )
-        content = response["structured_response"].response_content
+        content = _extract_agent_response_text(response)
+        if not content:
+            raise ValueError("Model returned empty response content")
+        _ensure_assistant_turn_persisted(runtime_agent, config, content)
         sources = get_last_sources()
-        log_append(username=username, question=body.message, answer=content, sources=sources)
+        log_append(username=username, question=user_message, answer=content, sources=sources)
         return ChatResponse(response=content, sources=sources, tool_events=tool_events)
     except Exception as e:
+        if _is_structured_output_validation_error(e):
+            try:
+                on_tool_event(
+                    {
+                        "source": "system",
+                        "tool_name": "structured_output_retry",
+                        "status": "start",
+                        "message": "Structured output validation failed, retrying in unstructured mode",
+                        "ts": int(time.time() * 1000),
+                    }
+                )
+                unstructured_agent = build_agent(
+                    extra_tools=extra_tools,
+                    model_name=selected_model_name,
+                    use_response_format=False,
+                )
+                retry_response = unstructured_agent.invoke(
+                    {"messages": [{"role": "user", "content": user_message}]},
+                    config=config,
+                    context=Context(user_id=username),
+                )
+                content = _extract_agent_response_text(retry_response)
+                if not content:
+                    raise ValueError("Unstructured retry returned empty response content")
+                _ensure_assistant_turn_persisted(unstructured_agent, config, content)
+                sources = get_last_sources()
+                on_tool_event(
+                    {
+                        "source": "system",
+                        "tool_name": "structured_output_retry",
+                        "status": "success",
+                        "message": "Recovered response via unstructured retry path",
+                        "ts": int(time.time() * 1000),
+                    }
+                )
+                log_append(username=username, question=user_message, answer=content, sources=sources)
+                return ChatResponse(response=content, sources=sources, tool_events=tool_events)
+            except Exception as structured_retry_error:
+                e = structured_retry_error
+        if (
+            (_is_rate_limit_error(e) or _is_provider_overloaded_error(e))
+            and RAG_ENABLE_RATE_LIMIT_FALLBACK
+            and RAG_FALLBACK_MODEL
+        ):
+            try:
+                primary_failure_reason = (
+                    "Rate limit" if _is_rate_limit_error(e) else "Provider overloaded"
+                )
+                on_tool_event(
+                    {
+                        "source": "system",
+                        "tool_name": "fallback_model",
+                        "status": "start",
+                        "message": f"{primary_failure_reason} on primary model, retrying on {RAG_FALLBACK_MODEL}",
+                        "ts": int(time.time() * 1000),
+                    }
+                )
+                fallback_agent = build_agent(extra_tools=extra_tools, model_name=RAG_FALLBACK_MODEL)
+                response = fallback_agent.invoke(
+                    {"messages": [{"role": "user", "content": user_message}]},
+                    config=config,
+                    context=Context(user_id=username),
+                )
+                content = _extract_agent_response_text(response)
+                if not content:
+                    raise ValueError("Fallback model returned empty response content")
+                _ensure_assistant_turn_persisted(fallback_agent, config, content)
+                sources = get_last_sources()
+                on_tool_event(
+                    {
+                        "source": "system",
+                        "tool_name": "fallback_model",
+                        "status": "success",
+                        "message": f"Fallback response generated by {RAG_FALLBACK_MODEL}",
+                        "ts": int(time.time() * 1000),
+                    }
+                )
+                log_append(username=username, question=user_message, answer=content, sources=sources)
+                return ChatResponse(response=content, sources=sources, tool_events=tool_events)
+            except Exception as fallback_error:
+                e = fallback_error
         logger.exception("Chat request failed")
         log_append(
             username=username,
-            question=body.message,
+            question=user_message,
             answer="",
             sources=[],
             error=str(e),
@@ -591,6 +1078,14 @@ def chat(
                     "Превышен лимит токенов провайдера модели. "
                     "Подождите 30–60 секунд и повторите запрос, "
                     "или уменьшите длину вопроса/контекста."
+                ),
+            )
+        if _is_provider_overloaded_error(e):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Провайдер модели временно перегружен. "
+                    "Подождите 10–30 секунд и повторите запрос."
                 ),
             )
         raise HTTPException(status_code=500, detail=str(e))

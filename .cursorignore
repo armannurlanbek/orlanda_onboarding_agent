@@ -1,5 +1,21 @@
+# Ignore everything by default
+*
+
+# Keep cursorignore itself visible/editable
+!.cursorignore
+
+# Keep only the application code we need
+!rag_agent/
+!rag_agent/**
+
+# Explicitly ignore known unnecessary folders/assets
+profile/
+logo/
+mondaycom_mcp/
 knowledge_base/
-drafts/
 company_knowledge/
+drafts/
 *logo*.png
 .env
+.venv/
+.env.example

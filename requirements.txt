@@ -2,7 +2,6 @@ langchain
 wikipedia
 langchain-community
 langchain-openai
-langchain-anthropic
 langchain-text-splitters
 python-dotenv
 pydantic
@@ -14,3 +13,8 @@ uvicorn
 langgraph-checkpoint-sqlite
 pyyaml
 cryptography
+sqlalchemy>=2.0
+alembic>=1.13
+# On Windows use this line (bundles libpq). Do not use plain `psycopg` without [binary].
+psycopg[binary]>=3.1
+argon2-cffi>=23.1

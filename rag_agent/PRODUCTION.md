@@ -7,10 +7,12 @@ This checklist helps you deploy the RAG agent on a **website** or **Slack**.
 ## 1. Environment and config
 
 - [ ] **OPENAI_API_KEY** set in the server environment (or `.env`), never in code (used by current RAG embeddings).
-- [ ] If `RAG_AGENT_MODEL` uses Anthropic (`anthropic:...`), set **ANTHROPIC_API_KEY** too.
+- [ ] **OpenAI-only runtime:** set `RAG_AGENT_MODEL` to an OpenAI model (recommended: `openai:gpt-4o-mini`).
 - [ ] **CHECKPOINT_DB** set to a file path for persistent chat history (e.g. `./data/checkpoints.db`).  
   Without it, history is in-memory and lost on restart.
 - [ ] Optional: **RAG_AGENT_MODEL**, **RAG_AGENT_MAX_TOKENS**, **RAG_AGENT_API_PORT** (see `config.py`).
+- [ ] **PostgreSQL (required):** **`DATABASE_URL`** is mandatory for the API — accounts and sessions live only in **`users`** and **`auth_sessions`**. Run **`python -m alembic upgrade head`**. One-time migration from old `data/users.json`: **`python -m rag_agent.import_json_users`**, then remove or archive that file. Registration passwords: **`RAG_MIN_PASSWORD_LENGTH`** (default 12), letter + digit; **`RAG_SESSION_EXPIRY_DAYS`** (default 7).
+- [ ] **Backups (operational):** schedule **`pg_dump`** (or your host’s automated backups) for the auth database; include **`RAG_AGENT_SECRET_KEY`** and **`DATABASE_URL`** credentials in your secrets backup — not in git.
 
 ---
 

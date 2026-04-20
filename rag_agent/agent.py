@@ -77,6 +77,20 @@ def delete_conversation_state(thread_id: str) -> None:
 _active_model_name = MODEL_NAME
 
 
+def _normalize_openai_model_name(model_name: str) -> str:
+    raw = (model_name or "").strip()
+    if not raw:
+        raise ValueError("model_name must be a non-empty string")
+    if ":" not in raw:
+        raw = f"openai:{raw}"
+    provider, _, model = raw.partition(":")
+    if provider.strip().lower() != "openai" or not model.strip():
+        raise ValueError(
+            "Only OpenAI models are supported. Use value like 'openai:gpt-4o-mini' or 'gpt-4o-mini'."
+        )
+    return f"openai:{model.strip()}"
+
+
 def get_active_model_name() -> str:
     """Return the current chat model identifier."""
     return _active_model_name
@@ -85,19 +99,17 @@ def get_active_model_name() -> str:
 def set_active_model(model_name: str) -> str:
     """
     Change the active chat model at runtime.
-    Supports provider-prefixed model ids, e.g. `anthropic:claude-sonnet-4-6`.
+    Supports OpenAI model ids, e.g. `openai:gpt-4o-mini` or `gpt-4o-mini`.
     Returns the normalized model name that will be used.
     """
     global _active_model_name
-    normalized = (model_name or "").strip()
-    if not normalized:
-        raise ValueError("model_name must be a non-empty string")
+    normalized = _normalize_openai_model_name(model_name)
     _active_model_name = normalized
     return _active_model_name
 
 
 def _build_chat_model(model_name: str | None = None):
-    selected_model = (model_name or _active_model_name).strip()
+    selected_model = _normalize_openai_model_name(model_name or _active_model_name)
     return init_chat_model(
         model=selected_model,
         temperature=TEMPERATURE,
@@ -120,17 +132,25 @@ class ResponseFormat:
     response_content: str
 
 
-def build_agent(extra_tools: list | None = None):
+def build_agent(
+    extra_tools: list | None = None,
+    model_name: str | None = None,
+    use_response_format: bool = True,
+):
     tools = [retrieve_context]
     if extra_tools:
         tools.extend(extra_tools)
+    kwargs = {
+        "model": _build_chat_model(model_name=model_name),
+        "tools": tools,
+        "system_prompt": system_prompt,
+        "checkpointer": _get_checkpointer(),
+        "context_schema": Context,
+    }
+    if use_response_format:
+        kwargs["response_format"] = ResponseFormat
     return create_agent(
-        model=_build_chat_model(),
-        tools=tools,
-        system_prompt=system_prompt,
-        checkpointer=_get_checkpointer(),
-        context_schema=Context,
-        response_format=ResponseFormat,
+        **kwargs,
     )
 
 

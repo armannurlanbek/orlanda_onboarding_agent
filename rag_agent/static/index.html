@@ -364,28 +364,6 @@
       flex-shrink: 0;
     }
 
-    .monday-chat-toggle {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-      font-size: 0.88rem;
-      color: var(--text-muted);
-      cursor: pointer;
-      user-select: none;
-      white-space: nowrap;
-    }
-
-    .monday-chat-toggle input {
-      width: 1.05rem;
-      height: 1.05rem;
-      accent-color: var(--primary);
-      cursor: pointer;
-    }
-
-    .monday-chat-toggle input:disabled + span {
-      opacity: 0.55;
-    }
-
     .conversation-controls {
       display: flex;
       align-items: center;
@@ -1001,7 +979,7 @@
       </div>
       <div id="auth-error" class="auth-error"></div>
       <form id="auth-form">
-        <input type="text" id="auth-username" placeholder="Логин" autocomplete="username">
+        <input type="text" id="auth-username" placeholder="Админ (короткий логин) или you@orlanda.info" autocomplete="username" maxlength="255">
         <input type="password" id="auth-password" placeholder="Пароль" autocomplete="current-password">
         <button type="submit" id="auth-submit">Войти</button>
       </form>
@@ -1013,9 +991,6 @@
       <img id="brand-logo" class="brand-logo" src="/branding/logo" alt="Orlanda Engineering">
       <span id="user-name"></span>
       <button type="button" id="btn-documents" class="secondary">Документы</button>
-      <span id="monday-status" class="integration-chip">Monday: not connected</span>
-      <button type="button" id="monday-connect" class="secondary">Connect Monday</button>
-      <button type="button" id="monday-disconnect" class="secondary" style="display:none">Disconnect Monday</button>
       <a href="/admin" id="btn-admin" class="admin-link">Админ-панель</a>
       <button type="button" id="logout" class="secondary">Выйти</button>
     </div>
@@ -1027,15 +1002,11 @@
         <ul id="conversation-list" class="conversation-list"></ul>
       </aside>
       <div class="chat-main">
-        <p class="subtitle">Ответы по базе знаний (документы компании). Включите Monday только когда нужны доски и задачи.</p>
+        <p class="subtitle">Ответы по базе знаний (документы компании).</p>
         <div id="messages"></div>
         <form id="form">
           <input type="text" id="input" placeholder="Задайте вопрос..." autocomplete="off">
           <div class="chat-form-actions">
-            <label class="monday-chat-toggle" id="use-monday-label" title="Снимите галочку — обычный чат только с базой знаний (RAG).">
-              <input type="checkbox" id="use-monday-chat" disabled>
-              <span>Monday</span>
-            </label>
             <button type="submit" id="send">Отправить</button>
           </div>
         </form>
@@ -1113,11 +1084,6 @@
     const newConversationBtn = document.getElementById("new-conversation");
     const logoutBtn = document.getElementById("logout");
     const btnDocuments = document.getElementById("btn-documents");
-    const mondayStatusEl = document.getElementById("monday-status");
-    const mondayConnectBtn = document.getElementById("monday-connect");
-    const mondayDisconnectBtn = document.getElementById("monday-disconnect");
-    const useMondayChat = document.getElementById("use-monday-chat");
-    const USE_MONDAY_KEY = "rag_agent_use_monday_chat";
     const knowledgeModal = document.getElementById("knowledge-modal");
     const knowledgeFileList = document.getElementById("knowledge-file-list");
     const uploadZone = document.getElementById("upload-zone");
@@ -1160,13 +1126,11 @@
         messagesEl.innerHTML = "<div class='conversation-loading'><span class='spinner'></span><span>Загрузка диалога...</span></div>";
         sendBtn.disabled = true;
         input.disabled = true;
-        useMondayChat.disabled = true;
       } else {
         const loadingEl = messagesEl.querySelector(".conversation-loading");
         if (loadingEl) loadingEl.remove();
         sendBtn.disabled = false;
         input.disabled = false;
-        refreshMondayStatus();
       }
     }
 
@@ -1196,36 +1160,7 @@
       const username = localStorage.getItem(AUTH_USER_KEY) || "";
       userNameEl.textContent = "Вы: " + username;
       initConversations(username);
-      refreshMondayStatus();
     }
-
-    async function refreshMondayStatus() {
-      const token = getToken();
-      if (!token) return;
-      try {
-        const r = await fetch("/integrations/monday/status", { headers: { "Authorization": "Bearer " + token } });
-        if (r.status === 401) { clearToken(); showAuth(); return; }
-        const data = await r.json().catch(() => ({}));
-        const connected = !!data.connected;
-        mondayStatusEl.classList.toggle("connected", connected);
-        mondayStatusEl.textContent = connected ? "Monday: connected" : "Monday: not connected";
-        mondayConnectBtn.style.display = connected ? "none" : "inline-flex";
-        mondayDisconnectBtn.style.display = connected ? "inline-flex" : "none";
-        useMondayChat.disabled = !connected;
-        if (!connected) {
-          useMondayChat.checked = false;
-        } else {
-          const saved = localStorage.getItem(USE_MONDAY_KEY);
-          useMondayChat.checked = saved === "true";
-        }
-      } catch (_) {}
-    }
-
-    useMondayChat.addEventListener("change", () => {
-      try {
-        localStorage.setItem(USE_MONDAY_KEY, useMondayChat.checked ? "true" : "false");
-      } catch (_) {}
-    });
 
     function loadConversations(username) {
       const raw = localStorage.getItem(CONV_KEY_PREFIX + username);
@@ -1330,8 +1265,36 @@
     }
 
     let isRegister = false;
-    tabLogin.addEventListener("click", () => { isRegister = false; tabLogin.classList.add("active"); tabRegister.classList.remove("active"); authSubmit.textContent = "Войти"; authError.textContent = ""; });
-    tabRegister.addEventListener("click", () => { isRegister = true; tabRegister.classList.add("active"); tabLogin.classList.remove("active"); authSubmit.textContent = "Зарегистрироваться"; authError.textContent = ""; });
+    tabLogin.addEventListener("click", () => {
+      isRegister = false;
+      tabLogin.classList.add("active");
+      tabRegister.classList.remove("active");
+      authSubmit.textContent = "Войти";
+      authError.textContent = "";
+      authPassword.placeholder = "Пароль";
+      authUsername.placeholder = "Логин (короткий для админа или you@orlanda.info)";
+    });
+    tabRegister.addEventListener("click", () => {
+      isRegister = true;
+      tabRegister.classList.add("active");
+      tabLogin.classList.remove("active");
+      authSubmit.textContent = "Зарегистрироваться";
+      authError.textContent = "";
+      authPassword.placeholder = "Мин. 12 символов, буква и цифра";
+      authUsername.placeholder = "you@orlanda.info";
+    });
+
+    function formatApiDetail(detail) {
+      if (detail == null || detail === "") return "Ошибка";
+      if (typeof detail === "string") return detail;
+      if (Array.isArray(detail)) {
+        return detail.map((x) => (typeof x === "string" ? x : (x.msg || x.message || JSON.stringify(x)))).join(" ");
+      }
+      if (typeof detail === "object" && (detail.msg || detail.message)) {
+        return detail.msg || detail.message;
+      }
+      return String(detail);
+    }
 
     authForm.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -1341,11 +1304,11 @@
         const r = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: authUsername.value.trim(), password: authPassword.value }),
+          body: JSON.stringify({ username: authUsername.value.trim(), password: authPassword.value.trim() }),
         });
         const data = await r.json().catch(() => ({}));
         if (!r.ok) {
-          authError.textContent = data.detail || "Ошибка";
+          authError.textContent = formatApiDetail(data.detail) || "Ошибка";
           return;
         }
         setToken(data.token, data.username);
@@ -1357,7 +1320,16 @@
       }
     });
 
-    logoutBtn.addEventListener("click", () => {
+    logoutBtn.addEventListener("click", async () => {
+      const token = getToken();
+      if (token) {
+        try {
+          await fetch("/auth/logout", {
+            method: "POST",
+            headers: { "Authorization": "Bearer " + token },
+          });
+        } catch (_) {}
+      }
       clearToken();
       showAuth();
       messagesEl.innerHTML = "";
@@ -1365,56 +1337,21 @@
       conversations = [];
     });
 
-    mondayConnectBtn.addEventListener("click", async () => {
-      const token = getToken();
-      if (!token) { showAuth(); return; }
-      try {
-        const r = await fetch("/integrations/monday/connect", {
-          method: "POST",
-          headers: { "Authorization": "Bearer " + token },
-        });
-        if (r.status === 401) { clearToken(); showAuth(); return; }
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok || !data.authorize_url) {
-          showError(data.detail || "Не удалось начать подключение Monday");
-          return;
-        }
-        window.location.href = data.authorize_url;
-      } catch (e) {
-        showError(e.message || "Нет связи с сервером");
-      }
-    });
-
-    mondayDisconnectBtn.addEventListener("click", async () => {
-      const token = getToken();
-      if (!token) { showAuth(); return; }
-      try {
-        const r = await fetch("/integrations/monday/disconnect", {
-          method: "POST",
-          headers: { "Authorization": "Bearer " + token },
-        });
-        if (r.status === 401) { clearToken(); showAuth(); return; }
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) {
-          showError(data.detail || "Не удалось отключить Monday");
-          return;
-        }
-        await refreshMondayStatus();
-      } catch (e) {
-        showError(e.message || "Нет связи с сервером");
-      }
-    });
-
     function normalizeAssistantContent(text) {
-      if (!text || typeof text !== "string") return "";
-      const s = text.trim();
+      if (text === null || text === undefined) return "";
+      if (typeof text === "object") {
+        if (typeof text.response_content === "string") return text.response_content;
+        if (typeof text.content === "string") return text.content;
+        try { return JSON.stringify(text); } catch (_) { return ""; }
+      }
+      const s = String(text).trim();
       if (s.startsWith("{\"response_content\":") || (s.startsWith("{") && s.includes("response_content"))) {
         try {
           const parsed = JSON.parse(s);
           if (parsed && typeof parsed.response_content === "string") return parsed.response_content;
         } catch (_) {}
       }
-      return text;
+      return String(text);
     }
 
     function formatBold(text) {
@@ -1427,7 +1364,15 @@
       return addMessageWithEvents(text, role, sources, []);
     }
 
+    function normalizeMessageRole(role) {
+      const v = String(role || "").toLowerCase();
+      if (v === "assistant" || v === "ai") return "assistant";
+      if (v === "user" || v === "human") return "user";
+      return "user";
+    }
+
     function addMessageWithEvents(text, role, sources, toolEvents) {
+      role = normalizeMessageRole(role);
       function formatSources(sources) {
         if (!sources || !sources.length) {
           return "Источники: не использовались";
@@ -1573,9 +1518,7 @@
 
       addMessage(text, "user", null);
       input.value = "";
-      const useMonday = useMondayChat.checked && !useMondayChat.disabled;
       sendBtn.disabled = true;
-      useMondayChat.disabled = true;
       hideTypingIndicator();
       showTypingIndicator();
 
@@ -1587,7 +1530,7 @@
         const res = await fetch(url, {
           method: "POST",
           headers: authHeaders(),
-          body: JSON.stringify({ message: text, use_monday: useMonday }),
+          body: JSON.stringify({ message: text }),
         });
         const data = await res.json().catch(() => ({}));
         if (res.status === 401) {
@@ -1605,7 +1548,6 @@
       } finally {
         hideTypingIndicator();
         sendBtn.disabled = false;
-        refreshMondayStatus();
       }
     });
 
@@ -2020,10 +1962,6 @@
       if (file) uploadKnowledgeFile(file);
     });
 
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("monday_connected") === "1" || params.get("monday_error")) {
-      history.replaceState({}, document.title, window.location.pathname);
-    }
     checkSession();
     showChatEmptyState();
   </script>
