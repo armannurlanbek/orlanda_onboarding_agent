@@ -1,18 +1,16 @@
 """
-Text knowledge items: name + content, stored in JSON and included in RAG index.
+Text knowledge items: name + content, stored in PostgreSQL and included in RAG index.
 """
 from __future__ import annotations
 
-import json
 import uuid
-from pathlib import Path
 from datetime import datetime, timezone
 
 from langchain_core.documents import Document
+from sqlalchemy import select
 
-from rag_agent.config import RAG_AGENT_DIR
-
-ITEMS_FILE = RAG_AGENT_DIR / "data" / "knowledge_items.json"
+from rag_agent.db.models import KnowledgeItemRecord
+from rag_agent.db.session import get_session_factory
 
 UNSET = object()
 
@@ -39,53 +37,51 @@ def _normalize_item(it: dict) -> dict:
     return out
 
 
-def _load_raw() -> list[dict]:
-    if not ITEMS_FILE.is_file():
-        return []
-    try:
-        data = json.loads(ITEMS_FILE.read_text(encoding="utf-8"))
-        if not isinstance(data, list):
-            return []
-        return data
-    except (json.JSONDecodeError, OSError):
-        return []
-
-
-def _save_raw(items: list[dict]) -> None:
-    ITEMS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    ITEMS_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+def _to_public(it: KnowledgeItemRecord) -> dict:
+    return {
+        "id": it.id,
+        "name": it.name,
+        "content": it.content or "",
+        "created_at": it.created_at.isoformat() if it.created_at else "",
+        "last_updated_at": it.last_updated_at.isoformat() if it.last_updated_at else "",
+        "update_period_days": it.update_period_days,
+        "responsible": it.responsible or "",
+    }
 
 
 def list_items() -> list[dict]:
     """Return all items with metadata fields (backward compatible)."""
-    return [_normalize_item(it) for it in _load_raw()]
+    with get_session_factory()() as db:
+        rows = db.execute(select(KnowledgeItemRecord).order_by(KnowledgeItemRecord.created_at.asc())).scalars().all()
+    return [_normalize_item(_to_public(it)) for it in rows]
 
 
 def get_item(item_id: str) -> dict | None:
     """Return one item by id or None."""
-    for it in _load_raw():
-        if it.get("id") == item_id:
-            return _normalize_item(it)
-    return None
+    with get_session_factory()() as db:
+        row = db.get(KnowledgeItemRecord, item_id)
+    return _normalize_item(_to_public(row)) if row else None
 
 
 def add_item(name: str, content: str, update_period_days: int | None = None, responsible: str = "") -> dict:
     """Create item and append to store."""
     name = (name or "").strip() or "Без названия"
-    items = _load_raw()
     now = _now_iso()
-    item = {
-        "id": str(uuid.uuid4()),
-        "name": name,
-        "content": (content or "").strip(),
-        "created_at": now,
-        "last_updated_at": now,
-        "update_period_days": update_period_days,
-        "responsible": responsible or "",
-    }
-    items.append(item)
-    _save_raw(items)
-    return item
+    item_id = str(uuid.uuid4())
+    dt = datetime.fromisoformat(now)
+    row = KnowledgeItemRecord(
+        id=item_id,
+        name=name,
+        content=(content or "").strip(),
+        created_at=dt,
+        last_updated_at=dt,
+        update_period_days=update_period_days,
+        responsible=responsible or "",
+    )
+    with get_session_factory()() as db:
+        db.add(row)
+        db.commit()
+    return _to_public(row)
 
 
 def update_item(
@@ -102,40 +98,38 @@ def update_item(
     - `update_period_days` is UNSET => leave unchanged, otherwise set (including null)
     - `touch_last_updated_at` controls whether last_updated_at is updated (content/name edits)
     """
-    items = _load_raw()
-    for i, it in enumerate(items):
-        if it.get("id") == item_id:
-            if name is not None:
-                items[i]["name"] = (name or "").strip() or "Без названия"
-            if content is not None:
-                items[i]["content"] = (content or "").strip()
-            if update_period_days is not UNSET:
-                items[i]["update_period_days"] = update_period_days
-            if touch_last_updated_at:
-                items[i]["last_updated_at"] = _now_iso()
-            # Backward compatible: ensure metadata fields exist for older items.
-            for k, v in _defaults().items():
-                items[i].setdefault(k, v)
-            _save_raw(items)
-            return items[i]
-    return None
+    with get_session_factory()() as db:
+        row = db.get(KnowledgeItemRecord, item_id)
+        if row is None:
+            return None
+        if name is not None:
+            row.name = (name or "").strip() or "Без названия"
+        if content is not None:
+            row.content = (content or "").strip()
+        if update_period_days is not UNSET:
+            row.update_period_days = update_period_days
+        if touch_last_updated_at:
+            row.last_updated_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(row)
+    return _to_public(row)
 
 
 def delete_item(item_id: str) -> bool:
     """Remove item by id. Return True if found and deleted."""
-    items = _load_raw()
-    for i, it in enumerate(items):
-        if it.get("id") == item_id:
-            items.pop(i)
-            _save_raw(items)
-            return True
-    return False
+    with get_session_factory()() as db:
+        row = db.get(KnowledgeItemRecord, item_id)
+        if row is None:
+            return False
+        db.delete(row)
+        db.commit()
+    return True
 
 
 def items_to_documents() -> list[Document]:
     """Convert all stored items to LangChain Documents for indexing (source_file = name for RAG display)."""
     docs = []
-    for it in _load_raw():
+    for it in list_items():
         name = it.get("name") or "Без названия"
         content = (it.get("content") or "").strip()
         if not content:

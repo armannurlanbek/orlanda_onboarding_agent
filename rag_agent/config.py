@@ -23,9 +23,34 @@ MAX_TOKENS = int(os.environ.get("RAG_AGENT_MAX_TOKENS", "4096"))
 TIMEOUT = int(os.environ.get("RAG_AGENT_TIMEOUT", "120"))
 
 # RAG context budget controls to avoid oversized prompts/rate-limit spikes.
+RAG_EMBEDDING_MODEL = os.environ.get("RAG_EMBEDDING_MODEL", "text-embedding-3-small").strip()
+RAG_VECTOR_DIM = int(os.environ.get("RAG_VECTOR_DIM", "1536"))
 RAG_RETRIEVE_TOP_K = int(os.environ.get("RAG_RETRIEVE_TOP_K", "4"))
+RAG_RETRIEVE_FETCH_K = int(os.environ.get("RAG_RETRIEVE_FETCH_K", "24"))
+RAG_ENABLE_HYBRID_RETRIEVAL = os.environ.get("RAG_ENABLE_HYBRID_RETRIEVAL", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+RAG_BM25_TOP_K = int(os.environ.get("RAG_BM25_TOP_K", "24"))
+RAG_ENABLE_MMR = os.environ.get("RAG_ENABLE_MMR", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+# 0.0 -> maximum diversity, 1.0 -> pure relevance.
+RAG_MMR_LAMBDA = float(os.environ.get("RAG_MMR_LAMBDA", "0.35"))
+RAG_RERANK_CANDIDATES_K = int(os.environ.get("RAG_RERANK_CANDIDATES_K", "18"))
+RAG_RRF_K = int(os.environ.get("RAG_RRF_K", "60"))
+RAG_ENABLE_CROSS_ENCODER_RERANK = os.environ.get("RAG_ENABLE_CROSS_ENCODER_RERANK", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+RAG_CROSS_ENCODER_MODEL = os.environ.get(
+    "RAG_CROSS_ENCODER_MODEL",
+    "cross-encoder/ms-marco-MiniLM-L-6-v2",
+).strip()
 RAG_MAX_CHARS_PER_CHUNK = int(os.environ.get("RAG_MAX_CHARS_PER_CHUNK", "1200"))
 RAG_MAX_TOTAL_CONTEXT_CHARS = int(os.environ.get("RAG_MAX_TOTAL_CONTEXT_CHARS", "6000"))
+RAG_NEIGHBOR_PAGE_WINDOW = int(os.environ.get("RAG_NEIGHBOR_PAGE_WINDOW", "1"))
+RAG_NEIGHBOR_MAX_CHUNKS = int(os.environ.get("RAG_NEIGHBOR_MAX_CHUNKS", "4"))
+RAG_QUERY_REWRITE_MAX = int(os.environ.get("RAG_QUERY_REWRITE_MAX", "3"))
+RAG_RETRIEVAL_LOG_TOP = int(os.environ.get("RAG_RETRIEVAL_LOG_TOP", "12"))
 # Hard cap for semantic conversation messages (user/assistant) in one thread.
 # When exceeded, API compacts history (summary of old turns + keep latest turns).
 RAG_MAX_HISTORY_MESSAGES = int(os.environ.get("RAG_MAX_HISTORY_MESSAGES", "16"))
@@ -45,6 +70,10 @@ RAG_FALLBACK_MODEL = os.environ.get("RAG_FALLBACK_MODEL", "openai:gpt-4o-mini").
 
 # Persistent checkpointer: set CHECKPOINT_DB to a file path (e.g. ./data/checkpoints.db) for production
 CHECKPOINT_DB = os.environ.get("CHECKPOINT_DB", "").strip() or None
+# Checkpoint backend: postgres | sqlite | memory.
+CHECKPOINT_BACKEND = os.environ.get("CHECKPOINT_BACKEND", "postgres").strip().lower()
+# Optional DSN override for postgres checkpoint backend; defaults to DATABASE_URL.
+CHECKPOINT_POSTGRES_URL = os.environ.get("CHECKPOINT_POSTGRES_URL", "").strip() or None
 
 # API (when running as web service). PORT is set by Railway, Render, Fly.io, etc.
 API_HOST = os.environ.get("RAG_AGENT_API_HOST", "0.0.0.0")

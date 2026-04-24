@@ -264,6 +264,24 @@
       font-size: 0.9rem;
     }
 
+    #user-name {
+      background: #f3f4f6;
+      color: #4b5563;
+      border: 1px solid #d1d5db;
+      box-shadow: none;
+      font-size: 0.9rem;
+      padding: 0.45rem 0.7rem;
+      min-height: 34px;
+      font-family: var(--font-body);
+    }
+
+    #user-name:hover {
+      background: #e5e7eb;
+      color: #374151;
+      transform: none;
+      box-shadow: none;
+    }
+
     .brand-logo {
       height: 64px;
       width: auto;
@@ -696,6 +714,22 @@
       gap: 0.5rem;
       justify-content: flex-end;
     }
+
+    #settings-modal input {
+      width: 100%;
+      padding: 0.6rem 0.8rem;
+      margin-bottom: 0.65rem;
+      border: 1px solid #ccc;
+      border-radius: var(--radius-md);
+      font-size: 0.95rem;
+      min-height: 40px;
+    }
+
+    #settings-modal input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.2);
+    }
     .file-list {
       list-style: none;
       margin: 0 0 1rem 0;
@@ -989,7 +1023,7 @@
   <div id="chat-area">
     <div class="user-bar">
       <img id="brand-logo" class="brand-logo" src="/branding/logo" alt="Orlanda Engineering">
-      <span id="user-name"></span>
+      <button type="button" id="user-name" class="secondary" style="display:none"></button>
       <button type="button" id="btn-documents" class="secondary">Документы</button>
       <a href="/admin" id="btn-admin" class="admin-link">Админ-панель</a>
       <button type="button" id="logout" class="secondary">Выйти</button>
@@ -1010,6 +1044,25 @@
             <button type="submit" id="send">Отправить</button>
           </div>
         </form>
+      </div>
+    </div>
+  </div>
+
+  <div id="settings-modal" class="modal-overlay">
+    <div class="modal" style="max-width:460px">
+      <h2 id="settings-title">Настройки аккаунта</h2>
+      <div class="modal-body" style="display:block; padding: 1rem 1.25rem;">
+        <p id="settings-subtitle" class="knowledge-msg" style="margin-top:0">Здесь можно сменить пароль.</p>
+        <div id="settings-error" class="knowledge-error" style="min-height:1.2rem"></div>
+        <div id="settings-current-wrap">
+          <input type="password" id="settings-current-password" placeholder="Текущий пароль" autocomplete="current-password">
+        </div>
+        <input type="password" id="settings-new-password" placeholder="Новый пароль" autocomplete="new-password">
+        <input type="password" id="settings-repeat-password" placeholder="Повторите новый пароль" autocomplete="new-password">
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="settings-cancel" class="secondary">Отмена</button>
+        <button type="button" id="settings-save">Сменить пароль</button>
       </div>
     </div>
   </div>
@@ -1080,6 +1133,16 @@
     const sendBtn = document.getElementById("send");
     const messagesEl = document.getElementById("messages");
     const userNameEl = document.getElementById("user-name");
+    const settingsModal = document.getElementById("settings-modal");
+    const settingsTitle = document.getElementById("settings-title");
+    const settingsSubtitle = document.getElementById("settings-subtitle");
+    const settingsError = document.getElementById("settings-error");
+    const settingsCurrentWrap = document.getElementById("settings-current-wrap");
+    const settingsCurrentPassword = document.getElementById("settings-current-password");
+    const settingsNewPassword = document.getElementById("settings-new-password");
+    const settingsRepeatPassword = document.getElementById("settings-repeat-password");
+    const settingsCancel = document.getElementById("settings-cancel");
+    const settingsSave = document.getElementById("settings-save");
     const conversationList = document.getElementById("conversation-list");
     const newConversationBtn = document.getElementById("new-conversation");
     const logoutBtn = document.getElementById("logout");
@@ -1109,6 +1172,7 @@
     const CONV_KEY_PREFIX = "rag_agent_conversations_";
     let currentConversationId = null;
     let conversations = [];
+    let mustChangePassword = false;
 
     function scrollChatToBottom() {
       try {
@@ -1153,12 +1217,53 @@
     function showAuth() {
       authArea.style.display = "block";
       chatArea.style.display = "none";
+      userNameEl.style.display = "none";
+      mustChangePassword = false;
+      settingsModal.classList.remove("open");
     }
+
+    function setChatInteractionDisabled(disabled) {
+      input.disabled = !!disabled;
+      sendBtn.disabled = !!disabled;
+      newConversationBtn.disabled = !!disabled;
+      btnDocuments.disabled = !!disabled;
+      if (disabled) {
+        input.placeholder = "Сначала смените временный пароль";
+      } else {
+        input.placeholder = "Задайте вопрос...";
+      }
+    }
+
+    function openSettingsModal(forced) {
+      mustChangePassword = !!forced;
+      settingsError.textContent = "";
+      settingsCurrentPassword.value = "";
+      settingsNewPassword.value = "";
+      settingsRepeatPassword.value = "";
+      settingsCurrentWrap.style.display = forced ? "none" : "block";
+      settingsCancel.style.display = forced ? "none" : "inline-flex";
+      settingsTitle.textContent = forced ? "Смена временного пароля" : "Настройки аккаунта";
+      settingsSubtitle.textContent = forced
+        ? "Это обязательный шаг при первом входе. Укажите новый пароль и повторите его."
+        : "Смените пароль в любое время.";
+      settingsModal.classList.add("open");
+      setChatInteractionDisabled(forced);
+      settingsNewPassword.focus();
+    }
+
+    function closeSettingsModal() {
+      if (mustChangePassword) return;
+      settingsModal.classList.remove("open");
+      settingsError.textContent = "";
+      setChatInteractionDisabled(false);
+    }
+
     function showChat() {
       authArea.style.display = "none";
       chatArea.style.display = "flex";
       const username = localStorage.getItem(AUTH_USER_KEY) || "";
-      userNameEl.textContent = "Вы: " + username;
+      userNameEl.textContent = "Вы: " + username + " \u25be";
+      userNameEl.style.display = "inline-flex";
       initConversations(username);
     }
 
@@ -1256,7 +1361,11 @@
             localStorage.setItem(AUTH_USER_KEY, data.username);
           }
           showChat();
-          await loadChatHistory();
+          if (data && data.must_change_password) {
+            openSettingsModal(true);
+          } else {
+            await loadChatHistory();
+          }
           return;
         }
       } catch (_) {}
@@ -1313,8 +1422,11 @@
         }
         setToken(data.token, data.username);
         showChat();
-        userNameEl.textContent = "Вы: " + data.username;
-        await loadChatHistory();
+        if (data.must_change_password) {
+          openSettingsModal(true);
+        } else {
+          await loadChatHistory();
+        }
       } catch (err) {
         authError.textContent = err.message || "Нет связи с сервером";
       }
@@ -1335,6 +1447,69 @@
       messagesEl.innerHTML = "";
       currentConversationId = null;
       conversations = [];
+    });
+
+    userNameEl.addEventListener("click", () => {
+      if (!getToken()) return;
+      openSettingsModal(false);
+    });
+
+    settingsCancel.addEventListener("click", closeSettingsModal);
+    settingsModal.addEventListener("click", (e) => {
+      if (e.target === settingsModal) {
+        closeSettingsModal();
+      }
+    });
+
+    async function submitPasswordChange() {
+      const token = getToken();
+      if (!token) { showAuth(); return; }
+      settingsError.textContent = "";
+      const payload = {
+        current_password: settingsCurrentWrap.style.display === "none" ? "" : settingsCurrentPassword.value,
+        new_password: settingsNewPassword.value,
+        repeat_password: settingsRepeatPassword.value,
+      };
+      if (!payload.new_password || !payload.repeat_password) {
+        settingsError.textContent = "Заполните новый пароль и подтверждение";
+        return;
+      }
+      if (payload.new_password !== payload.repeat_password) {
+        settingsError.textContent = "Новый пароль и подтверждение не совпадают";
+        return;
+      }
+      settingsSave.disabled = true;
+      try {
+        const r = await fetch("/auth/password/change", {
+          method: "POST",
+          headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          settingsError.textContent = formatApiDetail(data.detail) || "Не удалось сменить пароль";
+          return;
+        }
+        setToken(data.token, data.username || localStorage.getItem(AUTH_USER_KEY) || "");
+        mustChangePassword = false;
+        settingsModal.classList.remove("open");
+        setChatInteractionDisabled(false);
+        await loadChatHistory();
+      } catch (err) {
+        settingsError.textContent = err.message || "Нет связи с сервером";
+      } finally {
+        settingsSave.disabled = false;
+      }
+    }
+
+    settingsSave.addEventListener("click", submitPasswordChange);
+    [settingsCurrentPassword, settingsNewPassword, settingsRepeatPassword].forEach((el) => {
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          submitPasswordChange();
+        }
+      });
     });
 
     function normalizeAssistantContent(text) {

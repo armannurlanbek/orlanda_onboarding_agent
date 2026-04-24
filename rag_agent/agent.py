@@ -8,7 +8,17 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langgraph.checkpoint.memory import InMemorySaver
 
-from .config import CHECKPOINT_DB, MAX_TOKENS, MODEL_NAME, RAG_AGENT_DIR, TEMPERATURE, TIMEOUT
+from .config import (
+    CHECKPOINT_BACKEND,
+    CHECKPOINT_DB,
+    CHECKPOINT_POSTGRES_URL,
+    DATABASE_URL,
+    MAX_TOKENS,
+    MODEL_NAME,
+    RAG_AGENT_DIR,
+    TEMPERATURE,
+    TIMEOUT,
+)
 from .rag_tool import retrieve_context
 
 _SYSTEM_PROMPT_PATH = RAG_AGENT_DIR / "system_prompt.yaml"
@@ -21,48 +31,74 @@ def _load_system_prompt() -> str:
     return data["system_prompt"].strip()
 
 
-_sqlite_checkpointer_cm = None
+_checkpointer_cm = None
 _checkpointer = None
 
 
-def _get_checkpointer():
-    """Create a valid checkpoint saver instance.
+def _postgres_checkpoint_dsn(raw_url: str) -> str:
+    url = (raw_url or "").strip()
+    if url.startswith("postgresql+psycopg://"):
+        return "postgresql://" + url[len("postgresql+psycopg://") :]
+    return url
 
-    Note: in this langgraph-checkpoint-sqlite version, `SqliteSaver.from_conn_string`
-    returns a context manager, so we must enter it and pass the yielded saver.
-    """
-    global _sqlite_checkpointer_cm, _checkpointer
+
+def _get_checkpointer():
+    """Create a valid checkpoint saver instance for configured backend."""
+    global _checkpointer_cm, _checkpointer
     if _checkpointer is not None:
         return _checkpointer
 
-    # Development / fallback
-    if not CHECKPOINT_DB:
+    backend = (CHECKPOINT_BACKEND or "").strip().lower()
+    if backend == "memory":
         _checkpointer = InMemorySaver()
         return _checkpointer
 
+    if backend == "postgres":
+        dsn = _postgres_checkpoint_dsn(CHECKPOINT_POSTGRES_URL or DATABASE_URL or "")
+        if not dsn:
+            raise RuntimeError(
+                "CHECKPOINT_BACKEND=postgres requires CHECKPOINT_POSTGRES_URL or DATABASE_URL."
+            )
+        try:
+            from langgraph.checkpoint.postgres import PostgresSaver  # type: ignore[reportMissingImports]
+        except ImportError:
+            raise ImportError(
+                "CHECKPOINT_BACKEND=postgres requires langgraph-checkpoint-postgres. "
+                "Run: pip install langgraph-checkpoint-postgres"
+            ) from None
+        _checkpointer_cm = PostgresSaver.from_conn_string(dsn)
+        _checkpointer = _checkpointer_cm.__enter__()
+        setup_fn = getattr(_checkpointer, "setup", None)
+        if callable(setup_fn):
+            setup_fn()
+        return _checkpointer
+
+    # sqlite backend
+    if not CHECKPOINT_DB:
+        _checkpointer = InMemorySaver()
+        return _checkpointer
     try:
         from langgraph.checkpoint.sqlite import SqliteSaver
     except ImportError:
         raise ImportError(
-            "CHECKPOINT_DB is set but langgraph-checkpoint-sqlite is not installed. "
+            "CHECKPOINT_BACKEND=sqlite requires langgraph-checkpoint-sqlite. "
             "Run: pip install langgraph-checkpoint-sqlite"
         ) from None
-
-    _sqlite_checkpointer_cm = SqliteSaver.from_conn_string(CHECKPOINT_DB)
-    _checkpointer = _sqlite_checkpointer_cm.__enter__()
+    _checkpointer_cm = SqliteSaver.from_conn_string(CHECKPOINT_DB)
+    _checkpointer = _checkpointer_cm.__enter__()
     return _checkpointer
 
 
 def close_checkpointer() -> None:
-    """Close sqlite checkpointer context if we opened one."""
-    global _sqlite_checkpointer_cm, _checkpointer
-    if _sqlite_checkpointer_cm is not None:
+    """Close checkpointer context if we opened one."""
+    global _checkpointer_cm, _checkpointer
+    if _checkpointer_cm is not None:
         try:
-            _sqlite_checkpointer_cm.__exit__(None, None, None)
+            _checkpointer_cm.__exit__(None, None, None)
         except Exception:
             # Best-effort cleanup; shutdown should still succeed.
             pass
-    _sqlite_checkpointer_cm = None
+    _checkpointer_cm = None
     _checkpointer = None
 
 

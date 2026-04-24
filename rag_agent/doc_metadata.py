@@ -1,40 +1,30 @@
 """
 Document metadata storage for admin workflows.
 
-We store PDF metadata (last update, update period, responsible) in a JSON file
-because PDFs themselves live on disk and we want editable extra fields.
+We store PDF metadata (last update, update period, responsible) in PostgreSQL.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import json
 from typing import Any
 
-from rag_agent.config import RAG_AGENT_DIR
-
-
-DATA_DIR = RAG_AGENT_DIR / "data"
-PDF_METADATA_FILE = DATA_DIR / "pdf_metadata.json"
+from rag_agent.db.models import PdfMetadataRecord
+from rag_agent.db.session import get_session_factory
 
 
 def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
-def _load_raw() -> dict[str, Any]:
-    if not PDF_METADATA_FILE.is_file():
-        return {"pdfs": {}}
-    try:
-        data = json.loads(PDF_METADATA_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {"pdfs": {}}
-    except (json.JSONDecodeError, OSError):
-        return {"pdfs": {}}
-
-
-def _save_raw(data: dict[str, Any]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    PDF_METADATA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+def _to_public(row: PdfMetadataRecord | None) -> dict[str, Any]:
+    if row is None:
+        return {"last_updated_at": "", "update_period_days": None, "responsible": ""}
+    return {
+        "last_updated_at": row.last_updated_at.isoformat() if row.last_updated_at else "",
+        "update_period_days": row.update_period_days,
+        "responsible": row.responsible or "",
+    }
 
 
 def _normalize_rel_path(rel_path: str) -> str:
@@ -50,51 +40,56 @@ def get_pdf_metadata(rel_path: str) -> dict[str, Any]:
     - responsible: username or "" (unknown)
     """
     rel_path = _normalize_rel_path(rel_path)
-    raw = _load_raw()
-    meta = (raw.get("pdfs") or {}).get(rel_path) or {}
-    return {
-        "last_updated_at": meta.get("last_updated_at") or "",
-        "update_period_days": meta.get("update_period_days", None),
-        "responsible": meta.get("responsible") or "",
-    }
+    with get_session_factory()() as db:
+        row = db.get(PdfMetadataRecord, rel_path)
+    return _to_public(row)
 
 
 def record_pdf_upload(rel_path: str, *, responsible: str, update_period_days: int | None) -> dict[str, Any]:
     """Set last_updated_at=now, responsible=caller, and update_period_days (can be null)."""
     rel_path = _normalize_rel_path(rel_path)
-    raw = _load_raw()
-    raw.setdefault("pdfs", {})
     now = _now_iso()
-    meta = {
-        "last_updated_at": now,
-        "update_period_days": update_period_days,
-        "responsible": responsible or "",
-    }
-    raw["pdfs"][rel_path] = meta
-    _save_raw(raw)
-    return meta
+    dt = datetime.fromisoformat(now)
+    with get_session_factory()() as db:
+        row = db.get(PdfMetadataRecord, rel_path)
+        if row is None:
+            row = PdfMetadataRecord(path=rel_path)
+            db.add(row)
+        row.last_updated_at = dt
+        row.update_period_days = update_period_days
+        row.responsible = responsible or ""
+        db.commit()
+        db.refresh(row)
+    return _to_public(row)
 
 
 def set_pdf_update_period(rel_path: str, *, update_period_days: int | None) -> dict[str, Any]:
     """Update only update_period_days (does not touch last_updated_at/responsible)."""
     rel_path = _normalize_rel_path(rel_path)
-    raw = _load_raw()
-    raw.setdefault("pdfs", {})
-    meta = raw["pdfs"].get(rel_path) or {"last_updated_at": "", "update_period_days": None, "responsible": ""}
-    meta["update_period_days"] = update_period_days
-    raw["pdfs"][rel_path] = meta
-    _save_raw(raw)
-    return meta
+    with get_session_factory()() as db:
+        row = db.get(PdfMetadataRecord, rel_path)
+        if row is None:
+            row = PdfMetadataRecord(
+                path=rel_path,
+                last_updated_at=None,
+                update_period_days=update_period_days,
+                responsible="",
+            )
+            db.add(row)
+        else:
+            row.update_period_days = update_period_days
+        db.commit()
+        db.refresh(row)
+    return _to_public(row)
 
 
 def delete_pdf_metadata(rel_path: str) -> None:
     rel_path = _normalize_rel_path(rel_path)
-    raw = _load_raw()
-    pdfs = raw.get("pdfs") or {}
-    if rel_path in pdfs:
-        pdfs.pop(rel_path, None)
-        raw["pdfs"] = pdfs
-        _save_raw(raw)
+    with get_session_factory()() as db:
+        row = db.get(PdfMetadataRecord, rel_path)
+        if row is not None:
+            db.delete(row)
+            db.commit()
 
 
 def rename_pdf_metadata(old_rel: str, new_rel: str) -> None:
@@ -103,15 +98,16 @@ def rename_pdf_metadata(old_rel: str, new_rel: str) -> None:
     new_rel = _normalize_rel_path(new_rel)
     if old_rel == new_rel:
         return
-    raw = _load_raw()
-    raw.setdefault("pdfs", {})
-    pdfs = raw.get("pdfs") or {}
-    if old_rel not in pdfs:
-        return
-    meta = pdfs.pop(old_rel)
-    pdfs[new_rel] = meta
-    raw["pdfs"] = pdfs
-    _save_raw(raw)
+    with get_session_factory()() as db:
+        row = db.get(PdfMetadataRecord, old_rel)
+        if row is None:
+            return
+        existing_new = db.get(PdfMetadataRecord, new_rel)
+        if existing_new is not None:
+            db.delete(existing_new)
+            db.flush()
+        row.path = new_rel
+        db.commit()
 
 
 def _parse_iso_maybe(iso: str) -> datetime | None:

@@ -1,18 +1,18 @@
-"""
+﻿"""
 Website auth: PostgreSQL only (users + auth_sessions).
 
 - Users: Argon2 password hashes; roles admin/user; identities per RAG_AGENT_ADMIN_USERNAMES
   and RAG_ALLOWED_EMAIL_DOMAIN (@orlanda.info by default).
 - Sessions: opaque bearer tokens stored hashed in auth_sessions (survive restarts).
 
-Legacy SHA-256 password hashes from imports are still verified once and upgraded to Argon2.
-
-users.json is no longer read or written — use `python -m rag_agent.import_json_users` once to migrate.
+Legacy SHA-256 password hashes from imports are still verified once and upgraded
+to Argon2 on successful login.
 """
 from __future__ import annotations
 
 import hashlib
 import secrets
+import string
 import time
 import uuid
 from datetime import datetime, timezone
@@ -70,7 +70,7 @@ def _verify_and_maybe_upgrade_hash(stored: str, password: str) -> tuple[bool, st
 
 
 def _password_policy_error(password: str) -> str | None:
-    """Return Russian error message for invalid new password, or None if ok (registration only)."""
+    """Return Russian error message for invalid new password, or None if ok."""
     if len(password) > RAG_MAX_PASSWORD_LENGTH:
         return f"Пароль не длиннее {RAG_MAX_PASSWORD_LENGTH} символов"
     if len(password) < RAG_MIN_PASSWORD_LENGTH:
@@ -82,11 +82,22 @@ def _password_policy_error(password: str) -> str | None:
     return None
 
 
+def _random_temp_password(length: int = 16) -> str:
+    """Generate a random temporary password compliant with current policy."""
+    length = max(RAG_MIN_PASSWORD_LENGTH, min(RAG_MAX_PASSWORD_LENGTH, int(length or 16)))
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*_-+=?"
+    while True:
+        pwd = "".join(secrets.choice(alphabet) for _ in range(length))
+        if _password_policy_error(pwd) is None:
+            return pwd
+
+
 def get_user_role(username: str) -> str:
     """Return 'admin' or 'user'. Admin if in ADMIN_USERNAMES env or stored role is admin."""
     if not username:
         return "user"
-    if username.lower() in ADMIN_USERNAMES:
+    canonical = _canonical_username(username)
+    if canonical in ADMIN_USERNAMES:
         return "admin"
     if not DATABASE_URL:
         return "user"
@@ -95,7 +106,7 @@ def get_user_role(username: str) -> str:
 
     session = get_session_factory()()
     try:
-        row = session.scalar(select(User).where(func.lower(User.username) == username.lower()))
+        row = session.scalar(select(User).where(func.lower(User.username).in_(_identity_candidates(username))))
         if row and row.role == "admin":
             return "admin"
     finally:
@@ -105,13 +116,17 @@ def get_user_role(username: str) -> str:
 
 def _username_rule_error_message() -> str:
     return (
-        "Разрешены только логины из списка администратора (переменная RAG_AGENT_ADMIN_USERNAMES) "
+        "Разрешены короткие логины (буквы/цифры/_/-) "
         f"или адрес электронной почты вида имя@{RAG_ALLOWED_EMAIL_DOMAIN}"
     )
 
 
-def _valid_admin_short_username(username: str) -> bool:
-    """Admin-only short login: no '@', 2–64 chars, letters/digits/_/-."""
+def _register_username_rule_error_message() -> str:
+    return f"Регистрация возможна только с корпоративной почтой вида имя@{RAG_ALLOWED_EMAIL_DOMAIN}"
+
+
+def _valid_short_username(username: str) -> bool:
+    """Short login: no '@', 2–64 chars, letters/digits/_/-."""
     if "@" in username or len(username) < 2 or len(username) > 64:
         return False
     for ch in username:
@@ -123,7 +138,7 @@ def _valid_admin_short_username(username: str) -> bool:
     return True
 
 
-def _valid_orlanda_email_username(username: str) -> bool:
+def _valid_company_email_username(username: str) -> bool:
     """Exactly one '@', domain is RAG_ALLOWED_EMAIL_DOMAIN, common email local-part chars."""
     if username.count("@") != 1:
         return False
@@ -142,14 +157,52 @@ def _valid_orlanda_email_username(username: str) -> bool:
 
 
 def _username_valid(username: str) -> bool:
-    ul = username.lower()
-    if ul in ADMIN_USERNAMES and ADMIN_USERNAMES:
-        if "@" not in username:
-            return _valid_admin_short_username(username)
-        return _valid_orlanda_email_username(username)
     if "@" in username:
-        return _valid_orlanda_email_username(username)
-    return False
+        return _valid_company_email_username(username)
+    return _valid_short_username(username)
+
+
+def _localpart_if_company_email(identity: str) -> str | None:
+    text = (identity or "").strip().lower()
+    if not _valid_company_email_username(text):
+        return None
+    local, _, _ = text.partition("@")
+    return local or None
+
+
+def _canonical_username(identity: str) -> str:
+    text = (identity or "").strip().lower()
+    local = _localpart_if_company_email(text)
+    return local or text
+
+
+def _identity_candidates(identity: str) -> list[str]:
+    text = (identity or "").strip().lower()
+    if not text:
+        return []
+    local = _localpart_if_company_email(text)
+    if local:
+        return [text, local]
+    return [text]
+
+
+def get_user_auth_flags(username: str) -> dict[str, bool]:
+    """Return auth-related flags for UI and route guards."""
+    if not DATABASE_URL or not username:
+        return {"must_change_password": False}
+    from rag_agent.db.models import User
+    from rag_agent.db.session import get_session_factory
+
+    db = get_session_factory()()
+    try:
+        user = db.scalar(select(User).where(func.lower(User.username).in_(_identity_candidates(username))))
+        return {"must_change_password": bool(getattr(user, "must_change_password", False))} if user else {"must_change_password": False}
+    finally:
+        db.close()
+
+
+def is_password_change_required(username: str) -> bool:
+    return bool(get_user_auth_flags(username).get("must_change_password"))
 
 
 def register(username: str, password: str) -> tuple[bool, str]:
@@ -158,12 +211,12 @@ def register(username: str, password: str) -> tuple[bool, str]:
         return False, "Сервер не настроен: задайте DATABASE_URL (PostgreSQL)."
     username = (username or "").strip()
     password = (password or "").strip()
-    if not _username_valid(username):
-        return False, _username_rule_error_message()
+    if not _valid_company_email_username(username):
+        return False, _register_username_rule_error_message()
     policy_err = _password_policy_error(password)
     if policy_err:
         return False, policy_err
-    return _register_db(username, password)
+    return _register_db(_canonical_username(username), password)
 
 
 def _register_db(username: str, password: str) -> tuple[bool, str]:
@@ -172,9 +225,10 @@ def _register_db(username: str, password: str) -> tuple[bool, str]:
 
     role = "admin" if username.lower() in ADMIN_USERNAMES else "user"
     ph = _hash_argon2(password)
+    now = datetime.now(timezone.utc)
     session = get_session_factory()()
     try:
-        exists = session.scalar(select(User.id).where(func.lower(User.username) == username.lower()))
+        exists = session.scalar(select(User.id).where(func.lower(User.username).in_(_identity_candidates(username))))
         if exists:
             return False, "Такой пользователь уже есть"
         u = User(
@@ -182,6 +236,9 @@ def _register_db(username: str, password: str) -> tuple[bool, str]:
             password_hash=ph,
             role=role,
             is_active=True,
+            must_change_password=False,
+            password_changed_at=now,
+            temp_password_issued_at=None,
         )
         session.add(u)
         session.flush()
@@ -194,6 +251,61 @@ def _register_db(username: str, password: str) -> tuple[bool, str]:
         session.close()
     token = _create_token(username, user_id=uid)
     return True, token
+
+
+def provision_user_with_temp_password(
+    *,
+    created_by_username: str,
+    username: str,
+    role: str = "user",
+) -> tuple[bool, dict | str]:
+    """Admin helper: create employee account with temporary password and forced first-login rotation."""
+    if not DATABASE_URL:
+        return False, "Сервер не настроен: задайте DATABASE_URL (PostgreSQL)."
+    creator = (created_by_username or "").strip()
+    username = _canonical_username((username or "").strip())
+    if get_user_role(creator) != "admin":
+        return False, "Доступ только для администратора"
+    if not _username_valid(username):
+        return False, _username_rule_error_message()
+
+    role_norm = str(role or "user").strip().lower()
+    if role_norm not in {"admin", "user"}:
+        return False, "role должен быть 'admin' или 'user'"
+
+    from rag_agent.db.models import User
+    from rag_agent.db.session import get_session_factory
+
+    temp_password = _random_temp_password()
+    now = datetime.now(timezone.utc)
+    db = get_session_factory()()
+    try:
+        exists = db.scalar(select(User.id).where(func.lower(User.username).in_(_identity_candidates(username))))
+        if exists:
+            return False, "Такой пользователь уже есть"
+        u = User(
+            username=username,
+            password_hash=_hash_argon2(temp_password),
+            role=role_norm,
+            is_active=True,
+            must_change_password=True,
+            password_changed_at=None,
+            temp_password_issued_at=now,
+        )
+        db.add(u)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+    return True, {
+        "username": username,
+        "role": role_norm,
+        "must_change_password": True,
+        "temporary_password": temp_password,
+    }
 
 
 def login(username: str, password: str) -> tuple[bool, str]:
@@ -215,7 +327,15 @@ def _login_db(username: str, password: str) -> tuple[bool, str]:
 
     session = get_session_factory()()
     try:
-        user = session.scalar(select(User).where(func.lower(User.username) == username.lower()))
+        candidates = _identity_candidates(username)
+        users = session.execute(
+            select(User).where(func.lower(User.username).in_(candidates))
+        ).scalars().all()
+        user = None
+        for candidate in candidates:
+            user = next((u for u in users if (u.username or "").lower() == candidate), None)
+            if user:
+                break
         if not user or not user.is_active:
             session.rollback()
             return False, "Неверный логин или пароль"
@@ -235,6 +355,85 @@ def _login_db(username: str, password: str) -> tuple[bool, str]:
         session.close()
     token = _create_token(canonical, user_id=uid)
     return True, token
+
+
+def _invalidate_all_user_sessions(db, user_id: uuid.UUID) -> None:
+    from rag_agent.db.models import AuthSession
+
+    db.execute(delete(AuthSession).where(AuthSession.user_id == user_id))
+
+
+def change_password(
+    *,
+    username: str,
+    new_password: str,
+    repeat_password: str,
+    current_password: str | None = None,
+) -> tuple[bool, str]:
+    """
+    Change password for current user.
+    - If must_change_password=true, current_password is optional.
+    - Otherwise current_password is required and validated.
+    Returns (ok, new_token_or_error).
+    """
+    if not DATABASE_URL:
+        return False, "Сервер не настроен: задайте DATABASE_URL (PostgreSQL)."
+    username = (username or "").strip()
+    new_password = (new_password or "").strip()
+    repeat_password = (repeat_password or "").strip()
+    current_password = (current_password or "").strip() or None
+
+    if not username:
+        return False, "Не удалось определить пользователя"
+    if new_password != repeat_password:
+        return False, "Новый пароль и подтверждение не совпадают"
+    policy_err = _password_policy_error(new_password)
+    if policy_err:
+        return False, policy_err
+
+    from rag_agent.db.models import User
+    from rag_agent.db.session import get_session_factory
+
+    db = get_session_factory()()
+    try:
+        user = db.scalar(select(User).where(func.lower(User.username) == username.lower()))
+        if not user or not user.is_active:
+            db.rollback()
+            return False, "Пользователь не найден или отключен"
+
+        if user.must_change_password:
+            # First-login flow: user already authenticated by token, current password can be omitted.
+            pass
+        else:
+            if not current_password:
+                db.rollback()
+                return False, "Введите текущий пароль"
+            ok, _ = _verify_and_maybe_upgrade_hash(user.password_hash, current_password)
+            if not ok:
+                db.rollback()
+                return False, "Текущий пароль неверный"
+
+        same_as_old, _ = _verify_and_maybe_upgrade_hash(user.password_hash, new_password)
+        if same_as_old:
+            db.rollback()
+            return False, "Новый пароль должен отличаться от текущего"
+
+        user.password_hash = _hash_argon2(new_password)
+        user.must_change_password = False
+        user.password_changed_at = datetime.now(timezone.utc)
+        user.temp_password_issued_at = None
+
+        _invalidate_all_user_sessions(db, user.id)
+        db.flush()
+        db.commit()
+
+        new_token = _create_token(user.username, user_id=user.id)
+        return True, new_token
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def _create_token(username: str, *, user_id: uuid.UUID) -> str:

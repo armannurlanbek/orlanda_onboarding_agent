@@ -23,9 +23,13 @@ from rag_agent.agent import (
     set_active_model,
 )
 from rag_agent.auth import (
+    change_password as auth_change_password,
     get_user_role,
+    get_user_auth_flags,
     invalidate_token,
+    is_password_change_required,
     login as auth_login,
+    provision_user_with_temp_password,
     register as auth_register,
     resolve_token,
 )
@@ -46,11 +50,13 @@ from rag_agent.config import (
 )
 from rag_agent.indexing import (
     KNOWLEDGE_BASE_DIR,
-    build_index,
-    clear_index,
+    reconcile_all_documents,
+    upsert_pdf_document,
+    delete_pdf_document,
+    upsert_knowledge_item,
+    delete_knowledge_item_document,
     extract_pdf_plain_text,
     list_knowledge_files,
-    load_all_documents,
     rag_sidecar_path,
 )
 from rag_agent.knowledge_items import (
@@ -69,7 +75,7 @@ from rag_agent.doc_metadata import (
     rename_pdf_metadata,
     set_pdf_update_period,
 )
-from rag_agent.rag_tool import get_last_sources, invalidate_vector_store
+from rag_agent.rag_tool import get_last_sources, invalidate_vector_store, retrieval_debug
 from rag_agent.chat_log import (
     append as log_append,
     list_entries as log_list_entries,
@@ -169,6 +175,19 @@ class ChatResponse(BaseModel):
 class AuthResponse(BaseModel):
     token: str
     username: str
+    role: str = "user"
+    must_change_password: bool = False
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(default="", max_length=RAG_MAX_PASSWORD_LENGTH)
+    new_password: str = Field(..., min_length=RAG_MIN_PASSWORD_LENGTH, max_length=RAG_MAX_PASSWORD_LENGTH)
+    repeat_password: str = Field(..., min_length=RAG_MIN_PASSWORD_LENGTH, max_length=RAG_MAX_PASSWORD_LENGTH)
+
+
+class AdminProvisionUserRequest(BaseModel):
+    username: str = Field(..., min_length=2, max_length=RAG_USERNAME_MAX_LEN)
+    role: str = Field(default="user", max_length=16)
 
 
 class PdfMetadataUpdate(BaseModel):
@@ -351,6 +370,21 @@ def admin_model_get(authorization: str | None = Header(default=None)):
     return {"model": get_active_model_name()}
 
 
+@app.get("/admin/retrieval/debug")
+def admin_retrieval_debug(
+    q: str = Query(..., min_length=1, max_length=2000),
+    limit: int = Query(default=12, ge=1, le=50),
+    authorization: str | None = Header(default=None),
+):
+    """
+    Retrieval diagnostics for one query:
+    returns query variants, ranked candidates, and selected sources. Requires admin.
+    """
+    _require_admin(authorization)
+    result = retrieval_debug(q.strip(), limit=limit)
+    return result
+
+
 @app.put("/admin/model")
 def admin_model_put(
     body: AdminModelUpdate,
@@ -520,14 +554,23 @@ def admin_history_threads(
     }
 
 
-def _get_username(authorization: str | None = Header(default=None)) -> str:
-    """Require Bearer token and return username; 401 if invalid."""
+def _get_username(
+    authorization: str | None = Header(default=None),
+    *,
+    enforce_password_rotation: bool = True,
+) -> str:
+    """Require Bearer token and return username; optionally block access until password is changed."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Требуется вход в аккаунт")
     token = authorization[7:].strip()
     username = resolve_token(token)
     if not username:
         raise HTTPException(status_code=401, detail="Сессия истекла, войдите снова")
+    if enforce_password_rotation and is_password_change_required(username):
+        raise HTTPException(
+            status_code=403,
+            detail="Требуется сменить временный пароль. Откройте настройки аккаунта и задайте новый пароль.",
+        )
     return username
 
 
@@ -766,7 +809,10 @@ def register(body: RegisterRequest):
     ok, result = auth_register(body.username.strip(), body.password)
     if not ok:
         raise HTTPException(status_code=400, detail=result)
-    return AuthResponse(token=result, username=body.username.strip())
+    username = resolve_token(result) or body.username.strip()
+    flags = get_user_auth_flags(username)
+    role = get_user_role(username)
+    return AuthResponse(token=result, username=username, role=role, must_change_password=bool(flags.get("must_change_password")))
 
 
 @app.post("/auth/login", response_model=AuthResponse)
@@ -775,7 +821,10 @@ def login(body: LoginRequest):
     ok, result = auth_login(body.username.strip(), body.password)
     if not ok:
         raise HTTPException(status_code=401, detail=result)
-    return AuthResponse(token=result, username=body.username.strip())
+    username = resolve_token(result) or body.username.strip()
+    flags = get_user_auth_flags(username)
+    role = get_user_role(username)
+    return AuthResponse(token=result, username=username, role=role, must_change_password=bool(flags.get("must_change_password")))
 
 
 @app.post("/auth/logout")
@@ -786,11 +835,68 @@ def logout(authorization: str | None = Header(default=None)):
     return {"ok": True}
 
 
+@app.post("/auth/password/change", response_model=AuthResponse)
+def password_change(
+    body: PasswordChangeRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Change password for current user (forced on first login or optional from settings)."""
+    username = _get_username(authorization, enforce_password_rotation=False)
+    ok, result = auth_change_password(
+        username=username,
+        current_password=body.current_password,
+        new_password=body.new_password,
+        repeat_password=body.repeat_password,
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=result)
+
+    # Revoke current bearer token too; return a fresh token from password-change flow.
+    if authorization and authorization.startswith("Bearer "):
+        invalidate_token(authorization[7:].strip())
+
+    new_token = result
+    canonical_username = resolve_token(new_token) or username
+    role = get_user_role(canonical_username)
+    flags = get_user_auth_flags(canonical_username)
+    return AuthResponse(
+        token=new_token,
+        username=canonical_username,
+        role=role,
+        must_change_password=bool(flags.get("must_change_password")),
+    )
+
+
 @app.get("/auth/me")
 def me(authorization: str | None = Header(default=None)):
     """Return current user and role if token valid."""
-    username = _get_username(authorization)
-    return {"username": username, "role": get_user_role(username)}
+    username = _get_username(authorization, enforce_password_rotation=False)
+    flags = get_user_auth_flags(username)
+    return {
+        "username": username,
+        "role": get_user_role(username),
+        "must_change_password": bool(flags.get("must_change_password")),
+    }
+
+
+@app.post("/admin/users/provision")
+def admin_user_provision(
+    body: AdminProvisionUserRequest,
+    authorization: str | None = Header(default=None),
+):
+    """
+    Create employee account with a random temporary password.
+    User must change password on first login.
+    """
+    admin_username = _require_admin(authorization)
+    ok, result = provision_user_with_temp_password(
+        created_by_username=admin_username,
+        username=body.username.strip(),
+        role=body.role.strip().lower(),
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=result)
+    return {"ok": True, "user": result}
 
 
 def _messages_to_history(messages) -> list[dict]:
@@ -1212,10 +1318,7 @@ def knowledge_pdf_text_put(
             except OSError as e:
                 raise HTTPException(status_code=500, detail=str(e))
         invalidate_vector_store()
-        if not load_all_documents():
-            clear_index()
-        else:
-            build_index()
+        upsert_pdf_document(_rel_under_knowledge(target))
         return {"ok": True, "path": _rel_under_knowledge(target), "source": "extracted"}
 
     final_pdf = target
@@ -1250,7 +1353,7 @@ def knowledge_pdf_text_put(
         raise HTTPException(status_code=500, detail=str(e))
 
     invalidate_vector_store()
-    build_index()
+    upsert_pdf_document(_rel_under_knowledge(final_pdf))
     return {"ok": True, "path": _rel_under_knowledge(final_pdf), "source": "override"}
 
 
@@ -1273,10 +1376,7 @@ def knowledge_delete(
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e))
     invalidate_vector_store()
-    if not load_all_documents():
-        clear_index()
-    else:
-        build_index()
+    delete_pdf_document(rel_path)
     return {"ok": True, "files": list_knowledge_files()}
 
 
@@ -1332,7 +1432,7 @@ def knowledge_upload(
         raise HTTPException(status_code=500, detail=str(e))
     record_pdf_upload(safe_name, responsible=username, update_period_days=update_period_days)
     invalidate_vector_store()
-    build_index()
+    upsert_pdf_document(safe_name)
     return {"ok": True, "name": safe_name, "files": list_knowledge_files()}
 
 
@@ -1341,11 +1441,8 @@ def knowledge_reindex(authorization: str | None = Header(default=None)):
     """Rebuild the RAG index from PDFs + knowledge items. Requires admin."""
     _require_admin(authorization)
     invalidate_vector_store()
-    if not load_all_documents():
-        clear_index()
-        return {"ok": True, "message": "Нет документов", "files": list_knowledge_files(), "items": ki_list()}
-    build_index()
-    return {"ok": True, "files": list_knowledge_files(), "items": ki_list()}
+    result = reconcile_all_documents()
+    return {"ok": True, "files": list_knowledge_files(), "items": ki_list(), "reconcile": result}
 
 
 # --- Knowledge items (text blocks) ---
@@ -1382,7 +1479,7 @@ def knowledge_item_create(body: KnowledgeItemCreate, authorization: str | None =
         responsible=username,
     )
     invalidate_vector_store()
-    build_index()
+    upsert_knowledge_item(str(item.get("id") or ""))
     return {"ok": True, "item": item}
 
 
@@ -1419,7 +1516,7 @@ def knowledge_item_update(
     if not item:
         raise HTTPException(status_code=404, detail="Элемент не найден")
     invalidate_vector_store()
-    build_index()
+    upsert_knowledge_item(item_id)
     return {"ok": True, "item": item}
 
 
@@ -1430,10 +1527,7 @@ def knowledge_item_delete(item_id: str, authorization: str | None = Header(defau
     if not ki_delete(item_id):
         raise HTTPException(status_code=404, detail="Элемент не найден")
     invalidate_vector_store()
-    if not load_all_documents():
-        clear_index()
-    else:
-        build_index()
+    delete_knowledge_item_document(item_id)
     return {"ok": True, "items": ki_list()}
 
 
