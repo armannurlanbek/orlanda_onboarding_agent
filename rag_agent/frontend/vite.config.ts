@@ -1,0 +1,50 @@
+import { defineConfig } from "vite";
+import type { IncomingMessage } from "http";
+import react from "@vitejs/plugin-react-swc";
+import path from "path";
+import { componentTagger } from "lovable-tagger";
+
+const apiTarget = "http://127.0.0.1:8000";
+
+// Some paths (`/auth`, `/chat`, `/admin/logs`) are BOTH SPA routes and API routes.
+// For browser navigation (Accept: text/html GETs) we must let Vite serve the dev
+// index.html so the React app boots; only fetch/XHR API calls should be proxied
+// to FastAPI. Without this, hard-refreshing /chat returns FastAPI's production
+// index.html which references built assets that the dev server doesn't have,
+// resulting in a blank page.
+const bypassSpaNavigation = (req: IncomingMessage) => {
+  const accept = String(req.headers.accept || "");
+  if (req.method === "GET" && accept.includes("text/html")) {
+    return "/index.html";
+  }
+  return undefined;
+};
+
+// https://vitejs.dev/config/
+export default defineConfig(({ mode }) => ({
+  server: {
+    host: "::",
+    port: 8080,
+    proxy: {
+      "/auth": { target: apiTarget, changeOrigin: true, bypass: bypassSpaNavigation },
+      "/chat": { target: apiTarget, changeOrigin: true, bypass: bypassSpaNavigation },
+      "/knowledge": { target: apiTarget, changeOrigin: true },
+      "/integrations": { target: apiTarget, changeOrigin: true },
+      "/branding": { target: apiTarget, changeOrigin: true },
+      "/health": { target: apiTarget, changeOrigin: true },
+      "/admin/logs": { target: apiTarget, changeOrigin: true, bypass: bypassSpaNavigation },
+      "/admin/documents/metadata": { target: apiTarget, changeOrigin: true },
+      "/admin/model": { target: apiTarget, changeOrigin: true },
+    },
+    hmr: {
+      overlay: false,
+    },
+  },
+  plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
+    dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime", "@tanstack/react-query", "@tanstack/query-core"],
+  },
+}));

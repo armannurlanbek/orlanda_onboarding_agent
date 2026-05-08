@@ -1,0 +1,133 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Orlanda Engineering — Warm Lavender design system. All colors HSL. */
+
+@layer base {
+  :root {
+    --background: 270 60% 98.5%;
+    --foreground: 257 45% 21%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 257 45% 21%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 257 45% 21%;
+
+    --primary: 252 100% 68%;
+    --primary-foreground: 0 0% 100%;
+    --primary-glow: 256 100% 74%;
+
+    --secondary: 268 50% 96%;
+    --secondary-foreground: 257 45% 21%;
+
+    --muted: 270 40% 96%;
+    --muted-foreground: 258 25% 51%;
+
+    --accent: 268 60% 94%;
+    --accent-foreground: 257 45% 21%;
+
+    --destructive: 346 78% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 71% 38%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 264 50% 93%;
+    --input: 264 50% 93%;
+    --ring: 252 100% 68%;
+
+    --radius: 0.875rem;
+
+    --gradient-primary: linear-gradient(135deg, hsl(252 100% 68%), hsl(266 100% 74%));
+    --gradient-surface: linear-gradient(180deg, hsl(270 60% 99%), hsl(270 60% 97%));
+    --shadow-sm: 0 1px 2px 0 hsl(258 60% 30% / 0.04);
+    --shadow-md: 0 4px 16px -4px hsl(258 60% 30% / 0.08);
+    --shadow-lg: 0 12px 40px -12px hsl(258 60% 30% / 0.18);
+    --shadow-glow: 0 8px 32px -8px hsl(252 100% 68% / 0.35);
+
+    --sidebar-background: 270 60% 99%;
+    --sidebar-foreground: 257 45% 21%;
+    --sidebar-primary: 252 100% 68%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 268 60% 94%;
+    --sidebar-accent-foreground: 257 45% 21%;
+    --sidebar-border: 264 50% 93%;
+    --sidebar-ring: 252 100% 68%;
+  }
+
+  .dark {
+    --background: 257 35% 9%;
+    --foreground: 270 40% 96%;
+    --card: 257 30% 12%;
+    --card-foreground: 270 40% 96%;
+    --popover: 257 30% 12%;
+    --popover-foreground: 270 40% 96%;
+    --primary: 256 100% 74%;
+    --primary-foreground: 257 45% 12%;
+    --primary-glow: 266 100% 78%;
+    --secondary: 257 25% 18%;
+    --secondary-foreground: 270 40% 96%;
+    --muted: 257 25% 16%;
+    --muted-foreground: 268 20% 70%;
+    --accent: 257 30% 22%;
+    --accent-foreground: 270 40% 96%;
+    --destructive: 346 78% 56%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 55%;
+    --warning-foreground: 0 0% 100%;
+    --border: 257 25% 20%;
+    --input: 257 25% 20%;
+    --ring: 256 100% 74%;
+    --sidebar-background: 257 35% 9%;
+    --sidebar-foreground: 270 40% 96%;
+    --sidebar-primary: 256 100% 74%;
+    --sidebar-primary-foreground: 257 45% 12%;
+    --sidebar-accent: 257 30% 18%;
+    --sidebar-accent-foreground: 270 40% 96%;
+    --sidebar-border: 257 25% 20%;
+    --sidebar-ring: 256 100% 74%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  html { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+  body { @apply bg-background text-foreground antialiased; font-feature-settings: "cv02", "cv03", "cv04", "cv11"; }
+  .font-display { font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif; letter-spacing: -0.015em; }
+}
+
+@layer components {
+  .btn-gradient {
+    background: var(--gradient-primary);
+    color: hsl(var(--primary-foreground));
+    box-shadow: var(--shadow-glow);
+    transition: transform 150ms ease, box-shadow 150ms ease, opacity 150ms ease;
+  }
+  .btn-gradient:hover { transform: translateY(-1px); opacity: 0.95; }
+  .btn-gradient:active { transform: translateY(0); }
+
+  .surface-card {
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    box-shadow: var(--shadow-sm);
+  }
+
+  .typing-dot {
+    @apply inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground;
+    animation: typing 1.4s infinite ease-in-out;
+  }
+  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+}
+
+@keyframes typing {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
