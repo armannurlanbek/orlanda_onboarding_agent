@@ -1,0 +1,48 @@
+services:
+  platform-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: platform-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-platform}
+      POSTGRES_USER: ${POSTGRES_USER:-platform}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - platform-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-platform} -d ${POSTGRES_DB:-platform}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - platform-network
+
+  platform:
+    build: .
+    image: orlanda-platform:latest
+    container_name: platform
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD}@platform-postgres:5432/${POSTGRES_DB:-platform}
+      PORT: "8000"
+      CHECKPOINT_BACKEND: postgres
+    depends_on:
+      platform-postgres:
+        condition: service_healthy
+    volumes:
+      - platform-knowledge:/app/knowledge_base
+      - platform-data:/app/rag_agent/data
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks:
+      - platform-network
+
+volumes:
+  platform-postgres-data:
+  platform-knowledge:
+  platform-data:
+
+networks:
+  platform-network:
+    driver: bridge

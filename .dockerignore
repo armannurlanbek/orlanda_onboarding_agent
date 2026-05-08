@@ -14,3 +14,7 @@ rag_agent/frontend/node_modules/
 rag_agent/frontend/dist/
 *.log
 .DS_Store
+n8n_orlanda.md
+copy/
+debug-*.log
+.claude/
