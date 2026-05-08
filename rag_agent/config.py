@@ -79,6 +79,12 @@ RAG_MONDAY_MCP_TIMEOUT_SECONDS = int(os.environ.get("RAG_MONDAY_MCP_TIMEOUT_SECO
 RAG_MONDAY_MCP_TOOL_ALLOWLIST = {
     name.strip() for name in os.environ.get("RAG_MONDAY_MCP_TOOL_ALLOWLIST", "").split(",") if name.strip()
 }
+# Anthropic supports at most 20 strict tools in one request.
+# Keep Monday toolset below that ceiling (retrieve_context may also be present).
+RAG_MONDAY_MCP_MAX_TOOLS = max(
+    1,
+    min(50, int(os.environ.get("RAG_MONDAY_MCP_MAX_TOOLS", "18"))),
+)
 RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS = max(
     30,
     int(os.environ.get("RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS", "600")),

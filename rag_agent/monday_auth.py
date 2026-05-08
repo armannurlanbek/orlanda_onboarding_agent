@@ -21,6 +21,7 @@ from sqlalchemy import delete, func, select
 
 from rag_agent.config import (
     MONDAY_ENCRYPTION_KEY,
+    RAG_MONDAY_MCP_MAX_TOOLS,
     RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS,
     RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS,
     RAG_MONDAY_MCP_TIMEOUT_SECONDS,
@@ -752,6 +753,50 @@ def _ensure_sync_callable_tools(tools: list) -> list:
     return wrapped
 
 
+def _cap_monday_tools(tools: list, max_tools: int) -> list:
+    """Cap tool count to satisfy provider limits on strict tools."""
+    cap = max(1, int(max_tools or 1))
+    if len(tools) <= cap:
+        return tools
+
+    exact_priority = [
+        "get_user_context",
+        "search",
+        "get_board_items_page",
+        "create_update",
+        "change_simple_column_value",
+        "change_multiple_column_values",
+        "create_item",
+        "create_subitem",
+        "delete_item",
+        "move_item_to_group",
+    ]
+    priority_index = {name: i for i, name in enumerate(exact_priority)}
+    write_markers = ("create_", "update", "delete", "change_", "move_", "set_", "edit", "write", "add_")
+
+    def _rank(tool_obj):
+        name = str(getattr(tool_obj, "name", "") or "").strip().lower()
+        score = 0
+        if name in priority_index:
+            score += 1000 - priority_index[name]
+        if any(marker in name for marker in write_markers):
+            score += 200
+        if name.startswith("get_"):
+            score += 100
+        if "search" in name:
+            score += 80
+        return (-score, name)
+
+    ranked = sorted(list(tools), key=_rank)
+    kept = ranked[:cap]
+    logger.warning(
+        "Capped monday MCP tools from %d to %d to satisfy provider strict-tool limits",
+        len(tools),
+        len(kept),
+    )
+    return kept
+
+
 def get_monday_mcp_tools_for_user(username: str) -> list:
     _configure_mcp_logging()
     token = _get_access_token_for_user(username)
@@ -784,6 +829,7 @@ def get_monday_mcp_tools_for_user(username: str) -> list:
     tools = _sanitize_tools_for_anthropic(tools)
     if RAG_MONDAY_MCP_TOOL_ALLOWLIST:
         tools = [t for t in tools if str(getattr(t, "name", "")).strip() in RAG_MONDAY_MCP_TOOL_ALLOWLIST]
+    tools = _cap_monday_tools(tools, RAG_MONDAY_MCP_MAX_TOOLS)
     _tools_cache[key_digest] = (now, list(tools))
     return tools
 
