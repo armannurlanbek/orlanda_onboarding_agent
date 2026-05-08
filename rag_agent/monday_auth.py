@@ -401,6 +401,43 @@ def _run_async_sync(coro):
     return None
 
 
+def _sanitize_tools_for_anthropic(tools: list) -> list:
+    """Strip minimum/maximum from number/integer fields — Anthropic's API rejects these."""
+    import copy
+    _STRIP = frozenset({"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"})
+
+    def _clean(obj):
+        if isinstance(obj, dict):
+            if obj.get("type") in ("number", "integer"):
+                for k in _STRIP:
+                    obj.pop(k, None)
+            for v in list(obj.values()):
+                _clean(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _clean(item)
+        return obj
+
+    for tool in tools:
+        schema_cls = getattr(tool, "args_schema", None)
+        if schema_cls is None:
+            continue
+        try:
+            clean_schema = _clean(schema_cls.model_json_schema())
+        except Exception:
+            continue
+
+        def _override_fn(cls, _cached=copy.deepcopy(clean_schema), **kw):
+            return copy.deepcopy(_cached)
+
+        try:
+            type.__setattr__(schema_cls, "model_json_schema", classmethod(_override_fn))
+        except Exception:
+            pass
+
+    return tools
+
+
 def _ensure_sync_callable_tools(tools: list) -> list:
     wrapped: list = []
     for tool in tools:
@@ -560,6 +597,7 @@ def get_monday_mcp_tools_for_user(username: str) -> list:
     )
     tools = _run_async_sync(client.get_tools()) or []
     tools = _ensure_sync_callable_tools(tools)
+    tools = _sanitize_tools_for_anthropic(tools)
     if RAG_MONDAY_MCP_TOOL_ALLOWLIST:
         tools = [t for t in tools if str(getattr(t, "name", "")).strip() in RAG_MONDAY_MCP_TOOL_ALLOWLIST]
     _tools_cache[key_digest] = (now, list(tools))
