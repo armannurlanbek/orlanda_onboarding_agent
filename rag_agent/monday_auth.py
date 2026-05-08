@@ -41,120 +41,99 @@ from rag_agent.db.session import get_engine, get_session_factory
 logger = logging.getLogger(__name__)
 
 
-def _patch_langchain_subset_model_for_anthropic() -> None:
-    """Patch langchain_core's `_create_subset_model` to strip number constraints.
+def _patch_anthropic_tool_converter() -> None:
+    """Patch langchain-anthropic's tool converter to strip number constraints.
 
-    Anthropic's API rejects `minimum`/`maximum`/etc. on number/integer JSON schemas.
-    `_create_subset_model` is what builds the schema sent to the LLM — patching it
-    here means every tool (Monday MCP or otherwise) gets a constraint-free schema.
-    Idempotent: skips if already patched.
+    Anthropic's API rejects `minimum`/`maximum`/etc. on number/integer schemas.
+    `convert_to_anthropic_tool` builds the exact dict sent over the wire — cleaning
+    its output is the most direct fix and bypasses Pydantic schema caching issues.
     """
-    try:
-        from langchain_core.tools import base as _tb
-    except Exception:
-        return
-
-    original = getattr(_tb, "_create_subset_model", None)
-    if original is None or getattr(original, "_anthropic_patched", False):
-        return
-
     import copy as _copy
-    import typing as _typing
-    from pydantic import create_model as _create_model
 
-    _STRIP = frozenset({"Ge", "Le", "Gt", "Lt", "MultipleOf", "Interval", "_PydanticGeneralMetadata"})
+    _STRIP_KEYS = ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf")
 
-    def _is_constraint(meta_obj) -> bool:
-        return type(meta_obj).__name__ in _STRIP
+    def _strip(obj):
+        if isinstance(obj, dict):
+            if obj.get("type") in ("number", "integer"):
+                for k in _STRIP_KEYS:
+                    obj.pop(k, None)
+            for v in list(obj.values()):
+                _strip(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _strip(item)
+        return obj
 
-    def _strip_annotation(ann):
-        meta = getattr(ann, "__metadata__", None)
-        if not meta:
-            return ann
-        base = getattr(ann, "__origin__", None)
-        if base is None:
-            return ann
-        kept = tuple(m for m in meta if not _is_constraint(m))
-        if not kept:
-            return base
-        return _typing.Annotated[(base, *kept)]
+    def _wrap(module, attr_name: str) -> bool:
+        original = getattr(module, attr_name, None)
+        if original is None or getattr(original, "_anthropic_strip_patched", False):
+            return False
 
-    def _strip_field(field):
-        new_field = _copy.copy(field)
-        try:
-            md = list(getattr(new_field, "metadata", None) or [])
-            new_field.metadata = [m for m in md if not _is_constraint(m)]
-        except Exception:
-            pass
-        for attr in ("ge", "le", "gt", "lt", "multiple_of"):
-            try:
-                if getattr(new_field, attr, None) is not None:
-                    setattr(new_field, attr, None)
-            except Exception:
-                pass
-        return new_field
-
-    def _patched(*args, **kwargs):
-        try:
+        def _patched(*args, **kwargs):
             result = original(*args, **kwargs)
-        except Exception:
-            raise
-        try:
-            for fname, finfo in list(getattr(result, "model_fields", {}).items()):
-                md = list(getattr(finfo, "metadata", None) or [])
-                cleaned_md = [m for m in md if not _is_constraint(m)]
-                if len(cleaned_md) != len(md):
-                    try:
-                        finfo.metadata = cleaned_md
-                    except Exception:
-                        pass
-                for attr in ("ge", "le", "gt", "lt", "multiple_of"):
-                    try:
-                        if getattr(finfo, attr, None) is not None:
-                            setattr(finfo, attr, None)
-                    except Exception:
-                        pass
-            try:
-                result.model_rebuild(force=True)
-            except Exception:
-                pass
-        except Exception:
-            pass
+            if isinstance(result, dict):
+                cleaned = _copy.deepcopy(result)
+                _strip(cleaned)
+                return cleaned
+            return result
 
-        try:
-            _orig_mjs = result.model_json_schema
+        _patched._anthropic_strip_patched = True  # type: ignore[attr-defined]
+        setattr(module, attr_name, _patched)
+        return True
 
-            def _strip_json(obj):
-                if isinstance(obj, dict):
-                    if obj.get("type") in ("number", "integer"):
-                        for k in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"):
-                            obj.pop(k, None)
-                    for v in list(obj.values()):
-                        _strip_json(v)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        _strip_json(item)
-                return obj
+    patched_any = False
 
-            def _patched_mjs(*a, **kw):
-                schema = _orig_mjs(*a, **kw)
-                return _strip_json(_copy.deepcopy(schema))
+    # 1. langchain_anthropic.chat_models.convert_to_anthropic_tool — final dict to API
+    try:
+        import langchain_anthropic.chat_models as _ac_chat
+        if _wrap(_ac_chat, "convert_to_anthropic_tool"):
+            patched_any = True
+    except Exception:
+        pass
 
-            try:
-                result.model_json_schema = _patched_mjs  # type: ignore[assignment]
-            except Exception:
-                pass
-        except Exception:
-            pass
+    # 2. Same symbol on the package root, in case it's imported from there
+    try:
+        import langchain_anthropic as _ac_root
+        if _wrap(_ac_root, "convert_to_anthropic_tool"):
+            patched_any = True
+    except Exception:
+        pass
 
-        return result
+    # 3. Sibling module location used by some versions
+    try:
+        import langchain_anthropic._client as _ac_client  # type: ignore[import-not-found]
+        if _wrap(_ac_client, "convert_to_anthropic_tool"):
+            patched_any = True
+    except Exception:
+        pass
 
-    _patched._anthropic_patched = True  # type: ignore[attr-defined]
-    _tb._create_subset_model = _patched
-    logger.info("Patched langchain_core._create_subset_model to strip number constraints")
+    # 4. Belt-and-suspenders: clean langchain_core's openai-tool converter too
+    try:
+        import langchain_core.utils.function_calling as _fc
+
+        original = getattr(_fc, "convert_to_openai_tool", None)
+        if original is not None and not getattr(original, "_anthropic_strip_patched", False):
+            def _patched_oai(*args, **kwargs):
+                result = original(*args, **kwargs)
+                if isinstance(result, dict):
+                    cleaned = _copy.deepcopy(result)
+                    _strip(cleaned)
+                    return cleaned
+                return result
+
+            _patched_oai._anthropic_strip_patched = True  # type: ignore[attr-defined]
+            _fc.convert_to_openai_tool = _patched_oai
+            patched_any = True
+    except Exception:
+        pass
+
+    if patched_any:
+        logger.info("Patched langchain tool converters to strip Anthropic-incompatible number constraints")
+    else:
+        logger.warning("Could not locate langchain tool converter to patch — Anthropic tool calls may 400")
 
 
-_patch_langchain_subset_model_for_anthropic()
+_patch_anthropic_tool_converter()
 
 
 _monday_call_stats_ctx: contextvars.ContextVar[dict[str, int] | None] = contextvars.ContextVar(
