@@ -39,6 +39,7 @@
       width: min(1700px, 100%);
       margin: 0 auto;
       padding: 1.2rem 1.4rem;
+      height: 100vh;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
@@ -62,16 +63,17 @@
     }
 
     #messages {
-      flex: 1;
       overflow-y: auto;
       background: var(--surface);
       border-radius: var(--radius-lg);
       padding: 1.1rem 1.1rem 0.9rem;
-      margin-bottom: 1rem;
+      margin-bottom: 0;
       min-height: 0;
+      flex: 1;
       border: 1px solid var(--border);
       box-shadow: var(--shadow-soft);
       overscroll-behavior: contain;
+      scrollbar-gutter: stable;
     }
 
     .msg {
@@ -347,6 +349,7 @@
       grid-template-columns: 320px minmax(0, 1fr);
       gap: 1rem;
       flex: 1;
+      height: 100%;
       min-height: 0;
       overflow: hidden;
     }
@@ -361,18 +364,24 @@
       flex-direction: column;
       gap: 0.7rem;
       min-height: 0;
-      position: sticky;
-      align-self: start;
-      top: 0.75rem;
-      max-height: calc(100vh - 1.5rem);
+      position: relative;
+      align-self: stretch;
+      max-height: 100%;
       overflow: hidden;
     }
 
     .chat-main {
       display: flex;
       flex-direction: column;
+      gap: 0.6rem;
+      height: 100%;
       min-height: 0;
       overflow: hidden;
+    }
+
+    .chat-main .subtitle {
+      flex-shrink: 0;
+      margin-top: 0;
     }
 
     .chat-form-actions {
@@ -465,9 +474,7 @@
       flex-wrap: wrap;
       align-items: center;
       gap: 0.5rem;
-      margin-top: 0.35rem;
-      position: sticky;
-      bottom: 0;
+      margin-top: 0;
       padding-top: 0.4rem;
       padding-bottom: 0.3rem;
       background: linear-gradient(to top, rgba(244, 245, 251, 0.98), rgba(244, 245, 251, 0.84));
@@ -545,8 +552,13 @@
       display: none;
       flex-direction: column;
       flex: 1;
+      height: 100%;
       min-height: 0;
       overflow: hidden;
+    }
+
+    #chat-area .user-bar {
+      flex-shrink: 0;
     }
     .modal-overlay {
       display: none;
@@ -1025,7 +1037,7 @@
       <img id="brand-logo" class="brand-logo" src="/branding/logo" alt="Orlanda Engineering">
       <button type="button" id="user-name" class="secondary" style="display:none"></button>
       <button type="button" id="btn-documents" class="secondary">Документы</button>
-      <a href="/admin" id="btn-admin" class="admin-link">Админ-панель</a>
+      <a href="/admin/logs" id="btn-admin" class="admin-link">Админ-панель</a>
       <button type="button" id="logout" class="secondary">Выйти</button>
     </div>
     <div class="chat-layout">
@@ -1258,13 +1270,13 @@
       setChatInteractionDisabled(false);
     }
 
-    function showChat() {
+    async function showChat() {
       authArea.style.display = "none";
       chatArea.style.display = "flex";
       const username = localStorage.getItem(AUTH_USER_KEY) || "";
       userNameEl.textContent = "Вы: " + username + " \u25be";
       userNameEl.style.display = "inline-flex";
-      initConversations(username);
+      await initConversations(username);
     }
 
     function loadConversations(username) {
@@ -1285,10 +1297,45 @@
       ];
     }
 
-    function saveConversations(username) {
+    function saveConversations(username, list = conversations) {
       try {
-        localStorage.setItem(CONV_KEY_PREFIX + username, JSON.stringify(conversations));
+        localStorage.setItem(CONV_KEY_PREFIX + username, JSON.stringify(list));
       } catch (_) {}
+    }
+
+    function normalizeConversationsList(list) {
+      const out = [];
+      const seen = new Set();
+      for (const item of (Array.isArray(list) ? list : [])) {
+        const id = String((item && item.id) || "").trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push({ id, title: String((item && item.title) || id).trim() || id });
+      }
+      if (!out.length) {
+        out.push({ id: "default", title: "Основной диалог" });
+      }
+      return out;
+    }
+
+    async function fetchConversationsFromServer() {
+      const token = getToken();
+      if (!token) return null;
+      try {
+        const res = await fetch("/chat/conversations", {
+          headers: { "Authorization": "Bearer " + token },
+        });
+        if (res.status === 401) {
+          clearToken();
+          showAuth();
+          return null;
+        }
+        if (!res.ok) return null;
+        const data = await res.json().catch(() => ({}));
+        return normalizeConversationsList(data.conversations || []);
+      } catch (_) {
+        return null;
+      }
     }
 
     function renderConversationSelect() {
@@ -1314,12 +1361,21 @@
       });
     }
 
-    function initConversations(username) {
+    async function initConversations(username) {
       if (!username) return;
-      conversations = loadConversations(username);
-      if (!currentConversationId || !conversations.find(c => c.id === currentConversationId)) {
-        currentConversationId = conversations[0].id;
+      const cached = normalizeConversationsList(loadConversations(username));
+      conversations = cached;
+      if (!currentConversationId || !cached.find(c => c.id === currentConversationId)) {
+        currentConversationId = cached[0].id;
       }
+      renderConversationSelect();
+      const serverList = await fetchConversationsFromServer();
+      if (!serverList) return;
+      conversations = serverList;
+      if (!currentConversationId || !serverList.find(c => c.id === currentConversationId)) {
+        currentConversationId = serverList[0].id;
+      }
+      saveConversations(username, serverList);
       renderConversationSelect();
     }
 
@@ -1360,7 +1416,7 @@
           if (data && data.username) {
             localStorage.setItem(AUTH_USER_KEY, data.username);
           }
-          showChat();
+          await showChat();
           if (data && data.must_change_password) {
             openSettingsModal(true);
           } else {
@@ -1421,7 +1477,7 @@
           return;
         }
         setToken(data.token, data.username);
-        showChat();
+        await showChat();
         if (data.must_change_password) {
           openSettingsModal(true);
         } else {
@@ -1646,7 +1702,7 @@
       if (messagesEl.childElementCount > 0) return;
       const box = document.createElement("div");
       box.className = "chat-empty-state";
-      box.innerHTML = "<strong>Начните диалог с агентом</strong><span>Например: \"Как работает онбординг в компании?\"</span>";
+      box.innerHTML = "<strong>Это HR-агент Orlanda Engineering</strong><span>Здесь вы можете задавать вопросы о бизнес-процессах и инженерных процессах компании.</span><span>Чтобы работать с Monday прямо из чата, откройте настройки аккаунта и подключите ваш Monday-аккаунт.</span>";
       messagesEl.appendChild(box);
     }
 
@@ -2084,18 +2140,13 @@
           return;
         }
 
-        conversations = conversations.filter(c => c.id !== convId);
-        if (!conversations.length) {
-          conversations = [{ id: "default", title: "Основной диалог" }];
-        }
-        if (currentConversationId === convId) {
-          currentConversationId = conversations[0].id;
-          messagesEl.innerHTML = "";
+        const wasCurrentConversation = currentConversationId === convId;
+        await initConversations(username);
+        messagesEl.innerHTML = "";
+        if (wasCurrentConversation) {
           showChatEmptyState();
-          await loadChatHistory();
         }
-        saveConversations(username);
-        renderConversationSelect();
+        await loadChatHistory();
         return;
       }
 

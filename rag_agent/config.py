@@ -15,8 +15,9 @@ KNOWLEDGE_BASE_DIR = PROJECT_ROOT / os.environ.get("KNOWLEDGE_BASE_DIR", "knowle
 
 # Model
 # Prefix with provider to switch safely, e.g.:
+# - anthropic:claude-sonnet-4-6
 # - openai:gpt-4o-mini
-MODEL_NAME = os.environ.get("RAG_AGENT_MODEL", "openai:gpt-4o-mini").strip()
+MODEL_NAME = os.environ.get("RAG_AGENT_MODEL", "anthropic:claude-sonnet-4-6").strip()
 TEMPERATURE = float(os.environ.get("RAG_AGENT_TEMPERATURE", "0.5"))
 MAX_TOKENS = int(os.environ.get("RAG_AGENT_MAX_TOKENS", "4096"))
 # Timeout for OpenAI API (seconds). Increase if prompts are large or answers long.
@@ -68,6 +69,53 @@ RAG_ENABLE_RATE_LIMIT_FALLBACK = os.environ.get("RAG_ENABLE_RATE_LIMIT_FALLBACK"
 }
 RAG_FALLBACK_MODEL = os.environ.get("RAG_FALLBACK_MODEL", "openai:gpt-4o-mini").strip()
 
+# Optional Monday MCP integration.
+RAG_ENABLE_MONDAY_MCP = os.environ.get("RAG_ENABLE_MONDAY_MCP", "false").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+RAG_MONDAY_MCP_URL = os.environ.get("RAG_MONDAY_MCP_URL", "https://mcp.monday.com/mcp").strip()
+RAG_MONDAY_MCP_TRANSPORT = os.environ.get("RAG_MONDAY_MCP_TRANSPORT", "streamable_http").strip()
+RAG_MONDAY_MCP_TIMEOUT_SECONDS = int(os.environ.get("RAG_MONDAY_MCP_TIMEOUT_SECONDS", "25"))
+RAG_MONDAY_MCP_TOOL_ALLOWLIST = {
+    name.strip() for name in os.environ.get("RAG_MONDAY_MCP_TOOL_ALLOWLIST", "").split(",") if name.strip()
+}
+RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS = max(
+    30,
+    int(os.environ.get("RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS", "600")),
+)
+RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS = os.environ.get(
+    "RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS",
+    "true",
+).strip().lower() in {"1", "true", "yes", "on"}
+RAG_MAX_AGENT_RECURSION_LIMIT = max(
+    6,
+    int(os.environ.get("RAG_MAX_AGENT_RECURSION_LIMIT", "12")),
+)
+RAG_MONDAY_MCP_OAUTH_ENABLED = os.environ.get("RAG_MONDAY_MCP_OAUTH_ENABLED", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY = os.environ.get("RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+# monday OAuth settings (hosted MCP user auth).
+RAG_MONDAY_OAUTH_CLIENT_ID = os.environ.get("RAG_MONDAY_OAUTH_CLIENT_ID", "").strip()
+RAG_MONDAY_OAUTH_CLIENT_SECRET = os.environ.get("RAG_MONDAY_OAUTH_CLIENT_SECRET", "").strip()
+RAG_MONDAY_OAUTH_REDIRECT_URI = os.environ.get("RAG_MONDAY_OAUTH_REDIRECT_URI", "").strip()
+RAG_MONDAY_OAUTH_AUTHORIZE_URL = os.environ.get(
+    "RAG_MONDAY_OAUTH_AUTHORIZE_URL",
+    "https://auth.monday.com/oauth2/authorize",
+).strip()
+RAG_MONDAY_OAUTH_TOKEN_URL = os.environ.get(
+    "RAG_MONDAY_OAUTH_TOKEN_URL",
+    "https://auth.monday.com/oauth2/token",
+).strip()
+RAG_MONDAY_OAUTH_SCOPES = os.environ.get("RAG_MONDAY_OAUTH_SCOPES", "").strip()
+RAG_MONDAY_OAUTH_STATE_TTL_SECONDS = max(
+    60,
+    int(os.environ.get("RAG_MONDAY_OAUTH_STATE_TTL_SECONDS", "600")),
+)
+MONDAY_ENCRYPTION_KEY = os.environ.get("MONDAY_ENCRYPTION_KEY", "").strip()
+
 # Persistent checkpointer: set CHECKPOINT_DB to a file path (e.g. ./data/checkpoints.db) for production
 CHECKPOINT_DB = os.environ.get("CHECKPOINT_DB", "").strip() or None
 # Checkpoint backend: postgres | sqlite | memory.
@@ -78,6 +126,9 @@ CHECKPOINT_POSTGRES_URL = os.environ.get("CHECKPOINT_POSTGRES_URL", "").strip() 
 # API (when running as web service). PORT is set by Railway, Render, Fly.io, etc.
 API_HOST = os.environ.get("RAG_AGENT_API_HOST", "0.0.0.0")
 API_PORT = int(os.environ.get("PORT", os.environ.get("RAG_AGENT_API_PORT", "8000")))
+# Optional absolute frontend URL used for OAuth callback redirects in split dev/prod setups.
+# Example: http://192.168.0.205:8080
+RAG_FRONTEND_BASE_URL = os.environ.get("RAG_FRONTEND_BASE_URL", "").strip().rstrip("/")
 
 # PostgreSQL (SQLAlchemy + Alembic). Example:
 # postgresql+psycopg://user:password@localhost:5432/rag_agent
@@ -99,6 +150,25 @@ RAG_ALLOWED_EMAIL_DOMAIN = os.environ.get("RAG_ALLOWED_EMAIL_DOMAIN", "orlanda.i
 # Max stored username length (emails need more than 64 characters).
 RAG_USERNAME_MAX_LEN = min(255, max(64, int(os.environ.get("RAG_USERNAME_MAX_LEN", "255"))))
 
+# CORS: comma-separated list of allowed origins for browser requests.
+RAG_CORS_ALLOWED_ORIGINS: list[str] = [
+    o.strip()
+    for o in os.environ.get(
+        "RAG_CORS_ALLOWED_ORIGINS",
+        "http://localhost:3000,http://localhost:5173,http://localhost:8000",
+    ).split(",")
+    if o.strip()
+]
+
+# Rate limiting (slowapi format: "N/period" where period = second|minute|hour|day).
+RAG_RATE_LIMIT_LOGIN = os.environ.get("RAG_RATE_LIMIT_LOGIN", "10/minute").strip()
+RAG_RATE_LIMIT_REGISTER = os.environ.get("RAG_RATE_LIMIT_REGISTER", "5/minute").strip()
+RAG_RATE_LIMIT_CHAT = os.environ.get("RAG_RATE_LIMIT_CHAT", "60/minute").strip()
+
+# Logging format: "json" (default, structured) or "text" (human-readable dev output).
+RAG_LOG_FORMAT = os.environ.get("RAG_LOG_FORMAT", "json").strip().lower()
+
+
 def _provider_from_model(model_name: str) -> str:
     """Return provider prefix from model name (`provider:model`) or openai by default."""
     if ":" in model_name:
@@ -107,15 +177,32 @@ def _provider_from_model(model_name: str) -> str:
 
 
 def require_runtime_keys() -> None:
-    """Validate API keys needed by runtime (OpenAI-only chat + embeddings for RAG)."""
+    """Validate API keys needed by runtime chat model and embeddings."""
     provider = _provider_from_model(MODEL_NAME)
-    if provider != "openai":
+    provider_key_requirements = {
+        "openai": "OPENAI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "google_genai": "GOOGLE_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "cohere": "COHERE_API_KEY",
+        "mistralai": "MISTRAL_API_KEY",
+        "together": "TOGETHER_API_KEY",
+        "fireworks": "FIREWORKS_API_KEY",
+        # Local Ollama runtime does not require a cloud API key.
+        "ollama": None,
+    }
+    required_key = provider_key_requirements.get(provider)
+    if required_key is None and provider != "ollama":
+        supported = ", ".join(sorted(provider_key_requirements.keys()))
         raise RuntimeError(
-            "Only OpenAI models are supported in this deployment. "
-            "Set RAG_AGENT_MODEL to an openai:* model (recommended: openai:gpt-4o-mini)."
+            f"Unsupported chat model provider '{provider}'. "
+            f"Use one of: {supported}."
         )
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY is not set. Set it in .env or the environment for production.")
+    if required_key and not os.environ.get(required_key):
+        raise RuntimeError(
+            f"{required_key} is not set. "
+            "Set it in .env or the environment for production."
+        )
     # Retrieval currently uses OpenAIEmbeddings in rag_agent/indexing.py for query embeddings.
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError(
@@ -125,4 +212,10 @@ def require_runtime_keys() -> None:
         raise RuntimeError(
             "DATABASE_URL is required. Authentication uses PostgreSQL only (users + auth_sessions); "
             "users.json is no longer used. Set DATABASE_URL in .env or the environment."
+        )
+    if SECRET_KEY == "change-me-in-production":
+        raise RuntimeError(
+            "RAG_AGENT_SECRET_KEY is set to the insecure default value. "
+            "Generate a strong secret with: python -c \"import secrets; print(secrets.token_hex(32))\" "
+            "and set it as RAG_AGENT_SECRET_KEY in .env or the environment before starting."
         )

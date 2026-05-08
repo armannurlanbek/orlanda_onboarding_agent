@@ -7,10 +7,10 @@ This checklist helps you deploy the RAG agent on a **website** or **Slack**.
 ## 1. Environment and config
 
 - [ ] **OPENAI_API_KEY** set in the server environment (or `.env`), never in code (used by current RAG embeddings).
-- [ ] **OpenAI-only runtime:** set `RAG_AGENT_MODEL` to an OpenAI model (recommended: `openai:gpt-4o-mini`).
+- [ ] Set **`RAG_AGENT_MODEL`** (default: `anthropic:claude-sonnet-4-6`) and provide matching provider key (e.g. `ANTHROPIC_API_KEY` for Anthropic).
 - [ ] **CHECKPOINT_DB** set to a file path for persistent chat history (e.g. `./data/checkpoints.db`).  
   Without it, history is in-memory and lost on restart.
-- [ ] Optional: **RAG_AGENT_MODEL**, **RAG_AGENT_MAX_TOKENS**, **RAG_AGENT_API_PORT** (see `config.py`).
+- [ ] Optional: **RAG_AGENT_MAX_TOKENS**, **RAG_AGENT_API_PORT** (see `config.py`).
 - [ ] **PostgreSQL (required):** **`DATABASE_URL`** is mandatory for the API — accounts and sessions live only in **`users`** and **`auth_sessions`**. Run **`python -m alembic upgrade head`** (includes `004_user_password_lifecycle`). One-time migration from old `data/users.json`: **`python -m rag_agent.import_json_users`**, then remove or archive that file. Registration passwords: **`RAG_MIN_PASSWORD_LENGTH`** (default 12), letter + digit; **`RAG_SESSION_EXPIRY_DAYS`** (default 7).
 - [ ] **Employee onboarding flow:** create users via **`POST /admin/users/provision`** (returns random temporary password once). First login is blocked from app routes until user completes **`POST /auth/password/change`**.
 - [ ] **Backups (operational):** schedule **`pg_dump`** (or your host’s automated backups) for the auth database; include **`RAG_AGENT_SECRET_KEY`** and **`DATABASE_URL`** credentials in your secrets backup — not in git.
@@ -68,6 +68,25 @@ So: **Slack → your backend → RAG API (`/chat`) → response back to Slack.**
 - **Structured logging**: log each request (thread_id, message length, success/error) for debugging and analytics.
 - **Metrics**: count requests, latency, errors (e.g. Prometheus + Grafana).
 - **Docker**: image that runs `uvicorn rag_agent.api:app` and sets `CHECKPOINT_DB` and `OPENAI_API_KEY` via env.
+
+---
+
+## 7. Monday MCP (per-user OAuth rollout)
+
+- [ ] Set env:
+  - `RAG_ENABLE_MONDAY_MCP=true`
+  - `RAG_MONDAY_MCP_OAUTH_ENABLED=true`
+  - `RAG_MONDAY_MCP_URL=https://mcp.monday.com/mcp`
+  - `RAG_MONDAY_OAUTH_CLIENT_ID`, `RAG_MONDAY_OAUTH_CLIENT_SECRET`
+  - `RAG_MONDAY_OAUTH_REDIRECT_URI=https://<your-domain>/auth/monday/callback`
+  - `MONDAY_ENCRYPTION_KEY=<strong-random-secret>`
+- [ ] Verify monday MCP app is installed in monday workspace and OAuth consent works for non-admin users.
+- [ ] Validate user isolation: two app users connect different monday accounts and confirm each sees only own monday data.
+- [ ] Validate intent routing:
+  - non-monday questions should not trigger monday tool path,
+  - monday actions without connection should return guided connect message,
+  - monday actions after connect should execute successfully.
+- [ ] Validate outage behavior: if monday MCP is unavailable, chat should still return a normal answer without crash.
 
 ---
 

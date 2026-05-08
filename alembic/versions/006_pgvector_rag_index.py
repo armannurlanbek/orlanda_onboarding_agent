@@ -6,12 +6,17 @@ Create Date: 2026-04-22
 """
 from __future__ import annotations
 
+import logging
 from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
 from pgvector.sqlalchemy import Vector
+from sqlalchemy import text
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import ProgrammingError
+
+_log = logging.getLogger(__name__)
 
 revision: str = "006_pgvector_rag_index"
 down_revision: Union[str, None] = "004_user_password_lifecycle"
@@ -20,8 +25,28 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # pgvector must be installed on PostgreSQL host package level first.
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    # On managed databases (Railway, Supabase, Neon) the pgvector extension is often
+    # pre-installed but the app user lacks CREATE EXTENSION privilege. We attempt to
+    # create it, and if that fails we verify it is already present before continuing.
+    bind = op.get_bind()
+    try:
+        bind.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    except ProgrammingError as exc:
+        already_installed = bind.execute(
+            text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+        ).fetchone()
+        if already_installed:
+            _log.warning(
+                "Could not create pgvector extension (privilege denied), but it is already "
+                "installed — continuing. Original error: %s",
+                exc,
+            )
+        else:
+            raise RuntimeError(
+                "pgvector extension is not installed and could not be created. "
+                "Ask your DBA to run: CREATE EXTENSION vector; "
+                f"Original error: {exc}"
+            ) from exc
 
     op.create_table(
         "rag_documents",

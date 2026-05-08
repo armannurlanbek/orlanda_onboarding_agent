@@ -1,0 +1,16 @@
+.env
+.env.local
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+knowledge_base/
+company_knowledge/
+rag_agent/index_store/
+rag_agent/data/
+rag_agent/frontend/node_modules/
+rag_agent/frontend/dist/
+*.log
+.DS_Store

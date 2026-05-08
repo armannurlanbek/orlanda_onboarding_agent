@@ -15,3 +15,10 @@ rag_agent/index_store/
 rag_agent/data/
 cursorignore/
 rag_agent/emails.csv
+n8n_orlanda.md
+
+# Local AI assistant settings
+.claude/settings.local.json
+
+# Runtime/debug logs
+debug-*.log

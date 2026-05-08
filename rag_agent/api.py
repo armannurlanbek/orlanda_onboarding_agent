@@ -3,15 +3,22 @@ REST API for the RAG agent. Serves a local chat UI with login; /chat uses your a
 """
 import json
 import logging
+import logging.config
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Form, Query
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import FastAPI, HTTPException, Header, Request, UploadFile, File, Form, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
 
 from rag_agent.agent import (
     Context,
@@ -36,6 +43,13 @@ from rag_agent.auth import (
 from rag_agent.config import (
     API_HOST,
     API_PORT,
+    RAG_CORS_ALLOWED_ORIGINS,
+    RAG_LOG_FORMAT,
+    RAG_MAX_AGENT_RECURSION_LIMIT,
+    RAG_FRONTEND_BASE_URL,
+    RAG_ENABLE_MONDAY_MCP,
+    RAG_MONDAY_MCP_OAUTH_ENABLED,
+    RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY,
     RAG_ENABLE_RATE_LIMIT_FALLBACK,
     RAG_FALLBACK_MODEL,
     RAG_HISTORY_KEEP_LAST_MESSAGES,
@@ -45,8 +59,22 @@ from rag_agent.config import (
     RAG_MAX_PASSWORD_LENGTH,
     RAG_MAX_USER_MESSAGE_CHARS,
     RAG_MIN_PASSWORD_LENGTH,
+    RAG_RATE_LIMIT_CHAT,
+    RAG_RATE_LIMIT_LOGIN,
+    RAG_RATE_LIMIT_REGISTER,
     RAG_USERNAME_MAX_LEN,
     require_runtime_keys,
+)
+from rag_agent.audit_log import count_audit, list_audit, write_audit
+from rag_agent.monday_auth import (
+    begin_monday_call_stats,
+    complete_monday_oauth_callback,
+    detect_monday_intent,
+    detect_monday_write_intent,
+    disconnect_monday,
+    get_monday_call_stats,
+    get_monday_status,
+    start_monday_oauth,
 )
 from rag_agent.indexing import (
     KNOWLEDGE_BASE_DIR,
@@ -72,7 +100,6 @@ from rag_agent.doc_metadata import (
     delete_pdf_metadata,
     get_pdf_metadata,
     record_pdf_upload,
-    rename_pdf_metadata,
     set_pdf_update_period,
 )
 from rag_agent.rag_tool import get_last_sources, invalidate_vector_store, retrieval_debug
@@ -82,6 +109,11 @@ from rag_agent.chat_log import (
     count as log_count,
     update_review as log_update_review,
 )
+from rag_agent.chat_conversations import (
+    list_for_user as list_conversation_meta_for_user,
+    upsert_for_user as upsert_conversation_meta_for_user,
+    delete_for_user as delete_conversation_meta_for_user,
+)
 
 STATIC_DIR = RAG_AGENT_DIR / "static"
 PROJECT_DIR = RAG_AGENT_DIR.parent
@@ -89,8 +121,38 @@ FRONTEND_DIR = RAG_AGENT_DIR / "frontend"
 FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
 FRONTEND_INDEX_PATH = FRONTEND_DIST_DIR / "index.html"
 
-logging.basicConfig(level=logging.INFO)
+
+class _JsonFormatter(logging.Formatter):
+    """Single-line JSON log records for structured log aggregators."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict = {
+            "time": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+if RAG_LOG_FORMAT == "text":
+    logging.basicConfig(level=logging.INFO)
+else:
+    _json_handler = logging.StreamHandler()
+    _json_handler.setFormatter(_JsonFormatter())
+    logging.basicConfig(level=logging.INFO, handlers=[_json_handler], force=True)
+
 logger = logging.getLogger(__name__)
+
+
+def _frontend_redirect_url(path_and_query: str) -> str:
+    target = str(path_and_query or "").strip() or "/"
+    if not target.startswith("/"):
+        target = "/" + target
+    base = (RAG_FRONTEND_BASE_URL or "").strip().rstrip("/")
+    return f"{base}{target}" if base else target
 
 
 def _is_rate_limit_error(err: Exception) -> bool:
@@ -106,6 +168,11 @@ def _is_provider_overloaded_error(err: Exception) -> bool:
 def _is_structured_output_validation_error(err: Exception) -> bool:
     txt = str(err).lower()
     return "structuredoutputvalidationerror" in txt or "failed to parse structured output" in txt
+
+
+def _is_monday_tool_validation_error(err: Exception) -> bool:
+    txt = str(err or "").lower()
+    return ("mcp error -32602" in txt) or ("invalid arguments for tool" in txt) or ("input validation error" in txt)
 
 
 def _extract_agent_response_text(response: dict) -> str:
@@ -152,6 +219,11 @@ def _extract_agent_response_text(response: dict) -> str:
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=10000)
+
+
+class ConversationCreateRequest(BaseModel):
+    id: str = Field(..., min_length=1, max_length=128)
+    title: str = Field(..., min_length=1, max_length=256)
 
 
 class LoginRequest(BaseModel):
@@ -211,6 +283,7 @@ class AdminModelUpdate(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     require_runtime_keys()
+    logger.info("Active chat model: %s", get_active_model_name())
     try:
         yield
     finally:
@@ -218,6 +291,39 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="RAG Agent API", lifespan=lifespan)
+
+# Rate limiting — keyed by client IP.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+
+# CORS — allow browser requests from configured origins.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=RAG_CORS_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
+)
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Inject HTTP security headers on every response."""
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'"
+    )
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    return response
 
 
 def _serve_frontend_or_legacy(legacy_path: Path) -> str:
@@ -250,14 +356,55 @@ def index():
 
 @app.get("/health")
 def health():
-    """Production health check."""
-    return {"status": "ok"}
+    """Production health check — verifies database connectivity."""
+    from sqlalchemy import text as _sa_text
+    from rag_agent.db.session import get_session_factory
+    try:
+        with get_session_factory()() as db:
+            db.execute(_sa_text("SELECT 1"))
+        return {"status": "ok", "db": "ok"}
+    except Exception as exc:
+        logger.error("Health check DB error: %s", exc)
+        return JSONResponse(status_code=503, content={"status": "degraded", "db": "error"})
 
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_index():
-    """Serve admin route shell for the frontend app."""
+    """Serve admin logs page by default."""
     return _serve_frontend_or_legacy(STATIC_DIR / "admin.html")
+
+
+@app.get("/admin/logs")
+def admin_logs(
+    authorization: str | None = Header(default=None),
+    limit: int = 100,
+    offset: int = 0,
+    accept: str | None = Header(default=None),
+):
+    """
+    Serve admin logs SPA shell for browser navigation (text/html),
+    and return JSON log entries for API fetches.
+    """
+    accept_l = (accept or "").lower()
+    if "text/html" in accept_l:
+        return _serve_frontend_or_legacy(STATIC_DIR / "admin.html")
+
+    _require_admin(authorization)
+    if limit < 1:
+        limit = 100
+    if limit > 500:
+        limit = 500
+    if offset < 0:
+        offset = 0
+    entries = log_list_entries(limit=limit, offset=offset)
+    total = log_count()
+    return {"entries": entries, "total": total}
+
+
+@app.get("/admin/documents", response_class=HTMLResponse)
+def admin_documents_page():
+    """Serve dedicated admin document metadata page."""
+    return _serve_frontend_or_legacy(STATIC_DIR / "admin_documents.html")
 
 
 @app.get("/auth", response_class=HTMLResponse)
@@ -323,33 +470,15 @@ def branding_logo():
     return FileResponse(candidates[0])
 
 
-@app.get("/admin/logs")
-def admin_logs(
-    authorization: str | None = Header(default=None),
-    limit: int = 100,
-    offset: int = 0,
-):
-    """Return chat log entries for the admin panel. Requires admin."""
-    _require_admin(authorization)
-    if limit < 1:
-        limit = 100
-    if limit > 500:
-        limit = 500
-    if offset < 0:
-        offset = 0
-    entries = log_list_entries(limit=limit, offset=offset)
-    total = log_count()
-    return {"entries": entries, "total": total}
-
-
 @app.patch("/admin/logs/{entry_id}/review")
 def admin_log_review_update(
     entry_id: str,
     body: AdminLogReviewUpdate,
+    request: Request,
     authorization: str | None = Header(default=None),
 ):
     """Update score/correct_answer for one log entry. Requires admin."""
-    _require_admin(authorization)
+    admin_username = _require_admin(authorization)
     fields_set = getattr(body, "model_fields_set", set()) or set()
     if not fields_set:
         raise HTTPException(status_code=400, detail="Нет полей для обновления")
@@ -360,6 +489,13 @@ def admin_log_review_update(
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Запись лога не найдена")
+    write_audit(
+        "review_log",
+        admin_username,
+        target=entry_id,
+        details={k: getattr(body, k) for k in fields_set},
+        ip_address=request.client.host if request.client else "",
+    )
     return {"ok": True, "entry": updated}
 
 
@@ -388,15 +524,36 @@ def admin_retrieval_debug(
 @app.put("/admin/model")
 def admin_model_put(
     body: AdminModelUpdate,
+    request: Request,
     authorization: str | None = Header(default=None),
 ):
     """Set active chat model at runtime. Requires admin."""
-    _require_admin(authorization)
+    admin_username = _require_admin(authorization)
+    old_model = get_active_model_name()
     try:
         model = set_active_model(body.model)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    write_audit(
+        "change_model",
+        admin_username,
+        details={"old": old_model, "new": model},
+        ip_address=request.client.host if request.client else "",
+    )
     return {"ok": True, "model": model}
+
+
+@app.get("/admin/audit")
+def admin_audit(
+    authorization: str | None = Header(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    """Return admin action audit log (newest first). Requires admin."""
+    _require_admin(authorization)
+    entries = list_audit(limit=limit, offset=offset)
+    total = count_audit()
+    return {"entries": entries, "total": total}
 
 
 @app.get("/admin/documents/metadata")
@@ -591,6 +748,17 @@ def _make_thread_id(username: str, conversation_id: str | None) -> str:
     return f"{username}:{conv}"
 
 
+def _parse_thread_id(thread_id: str) -> tuple[str, str]:
+    """Split thread id into (username, conversation_id) with defaults."""
+    raw = str(thread_id or "").strip()
+    if not raw:
+        return "", "default"
+    if ":" in raw:
+        username, conversation_id = raw.split(":", 1)
+        return username.strip(), (conversation_id.strip() or "default")
+    return raw, "default"
+
+
 def _semantic_message_count(messages) -> int:
     """Count only user/assistant turns (ignore tool/system chatter)."""
     total = 0
@@ -610,6 +778,159 @@ def _semantic_message_count(messages) -> int:
         if role in {"assistant", "ai", "user", "human"}:
             total += 1
     return total
+
+
+def _plain_text_from_message_content(content_raw) -> str:
+    """
+    Keep only human-readable text from message content.
+    Drops tool_use/tool_result blocks so persisted history stays provider-safe.
+    """
+    if content_raw is None:
+        return ""
+    if isinstance(content_raw, str):
+        return content_raw.strip()
+    if isinstance(content_raw, list):
+        text_parts: list[str] = []
+        for block in content_raw:
+            if isinstance(block, dict):
+                block_type = str(block.get("type") or "").strip().lower()
+                if block_type in {"tool_use", "tool_result"}:
+                    continue
+                txt = block.get("text")
+                if txt:
+                    text_parts.append(str(txt).strip())
+            elif block:
+                text_parts.append(str(block).strip())
+        return " ".join(p for p in text_parts if p).strip()
+    if isinstance(content_raw, dict):
+        txt = content_raw.get("text") or content_raw.get("content") or ""
+        return str(txt).strip()
+    return str(content_raw).strip()
+
+
+def _has_tool_protocol_blocks(content_raw) -> bool:
+    """Detect provider-specific tool protocol blocks in message content."""
+    if isinstance(content_raw, list):
+        for block in content_raw:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type") or "").strip().lower()
+            if block_type in {"tool_use", "tool_result"}:
+                return True
+    return False
+
+
+def _extract_tool_call_names(message_obj) -> list[str]:
+    """Return tool names referenced by a persisted message object/dict."""
+    try:
+        calls = None
+        if isinstance(message_obj, dict):
+            calls = message_obj.get("tool_calls")
+        else:
+            calls = getattr(message_obj, "tool_calls", None)
+        if not isinstance(calls, list):
+            return []
+        names: list[str] = []
+        for call in calls:
+            if isinstance(call, dict):
+                nm = str(call.get("name") or "").strip()
+                if nm:
+                    names.append(nm)
+        return names
+    except Exception:
+        return []
+
+
+def _sanitize_persisted_messages_for_provider(messages) -> tuple[list[dict[str, str]], bool]:
+    """
+    Normalize persisted history into provider-safe plain-text turns.
+    Removes tool protocol blocks so resumed requests cannot fail on strict pairing rules.
+    Returns (sanitized_messages, changed_flag).
+    """
+    sanitized: list[dict[str, str]] = []
+    changed = False
+    removed_tool_call_msgs = 0
+    for m in messages or []:
+        role_raw = None
+        content_raw = ""
+        if isinstance(m, dict):
+            role_raw = m.get("role") or m.get("type")
+            content_raw = m.get("content") or ""
+        else:
+            role_raw = getattr(m, "role", None) or getattr(m, "type", None)
+            content_raw = getattr(m, "content", "") or ""
+            if not role_raw and hasattr(m, "__class__"):
+                name = m.__class__.__name__.lower()
+                if "ai" in name or "assistant" in name:
+                    role_raw = "assistant"
+                elif "human" in name or "user" in name:
+                    role_raw = "user"
+
+        role = str(role_raw or "").strip().lower()
+        if role in {"tool"}:
+            changed = True
+            continue
+        if role in {"ai"}:
+            role = "assistant"
+            changed = True
+        elif role in {"human"}:
+            role = "user"
+            changed = True
+        elif role not in {"assistant", "user", "system"}:
+            changed = True
+            continue
+
+        tool_call_names = _extract_tool_call_names(m)
+        if tool_call_names:
+            # Drop assistant planning/tool-call stubs from persisted state to avoid
+            # replay loops and cross-mode tool contamination on next invocation.
+            changed = True
+            removed_tool_call_msgs += 1
+            continue
+
+        if _has_tool_protocol_blocks(content_raw):
+            changed = True
+        content = _plain_text_from_message_content(content_raw)
+        if not content:
+            if content_raw:
+                changed = True
+            continue
+        if not isinstance(content_raw, str):
+            changed = True
+        sanitized.append({"role": role, "content": content})
+
+    return sanitized, changed
+
+
+def _repair_conversation_history_for_provider(runtime_agent, config: dict) -> bool:
+    """
+    Best-effort repair for persisted message history.
+    Rewrites thread history into plain user/assistant/system turns without tool protocol blocks.
+    """
+    get_state = getattr(runtime_agent, "get_state", None)
+    update_state = getattr(runtime_agent, "update_state", None)
+    if not callable(get_state) or not callable(update_state):
+        return False
+    try:
+        state = get_state(config)
+        values = getattr(state, "values", None) or {}
+        history_messages = values.get("messages", []) or []
+        sanitized_messages, changed = _sanitize_persisted_messages_for_provider(history_messages)
+        if not changed:
+            return False
+        thread_id = str(((config or {}).get("configurable") or {}).get("thread_id") or "").strip()
+        if thread_id:
+            delete_conversation_state(thread_id)
+        if not sanitized_messages:
+            return True
+        try:
+            update_state(config, {"messages": sanitized_messages})
+        except TypeError:
+            update_state({"messages": sanitized_messages}, config=config)
+        return True
+    except Exception:
+        # Never block chat request on repair path.
+        return False
 
 
 def _semantic_messages_only(messages) -> list[dict[str, str]]:
@@ -634,13 +955,16 @@ def _semantic_messages_only(messages) -> list[dict[str, str]]:
         role = str(role_raw or "").strip().lower()
         if role not in {"assistant", "ai", "user", "human"}:
             continue
+        content = _plain_text_from_message_content(content_raw)
+        if not content:
+            continue
         normalized.append(
             {
                 "role": "assistant" if role in {"assistant", "ai"} else "user",
-                "content": str(content_raw or "").strip(),
+                "content": content,
             }
         )
-    return [m for m in normalized if m["content"]]
+    return normalized
 
 
 def _summarize_messages(
@@ -804,7 +1128,8 @@ def _ensure_assistant_turn_persisted(runtime_agent, config: dict, content: str) 
 
 
 @app.post("/auth/register", response_model=AuthResponse)
-def register(body: RegisterRequest):
+@limiter.limit(RAG_RATE_LIMIT_REGISTER)
+def register(request: Request, body: RegisterRequest):
     """Create account; returns token and username. thread_id = username so history is per user."""
     ok, result = auth_register(body.username.strip(), body.password)
     if not ok:
@@ -816,7 +1141,8 @@ def register(body: RegisterRequest):
 
 
 @app.post("/auth/login", response_model=AuthResponse)
-def login(body: LoginRequest):
+@limiter.limit(RAG_RATE_LIMIT_LOGIN)
+def login(request: Request, body: LoginRequest):
     """Log in; returns token and username."""
     ok, result = auth_login(body.username.strip(), body.password)
     if not ok:
@@ -879,8 +1205,72 @@ def me(authorization: str | None = Header(default=None)):
     }
 
 
+@app.get("/auth/monday/status")
+def monday_status(authorization: str | None = Header(default=None)):
+    """Return per-user monday connection status."""
+    username = _get_username(authorization, enforce_password_rotation=False)
+    status = get_monday_status(username)
+    return {
+        "enabled": bool(RAG_ENABLE_MONDAY_MCP and RAG_MONDAY_MCP_OAUTH_ENABLED),
+        "connected": bool(status.connected),
+        "monday_user_id": status.monday_user_id,
+        "monday_account_id": status.monday_account_id,
+        "scope": status.scope,
+        "expires_at": status.expires_at,
+        "revoked": bool(status.revoked),
+    }
+
+
+@app.get("/auth/monday/start")
+def monday_start(
+    authorization: str | None = Header(default=None),
+    redirect_uri: str | None = Query(default=None),
+):
+    """Start monday OAuth for current user and return authorization URL."""
+    username = _get_username(authorization, enforce_password_rotation=False)
+    if not RAG_ENABLE_MONDAY_MCP or not RAG_MONDAY_MCP_OAUTH_ENABLED:
+        raise HTTPException(status_code=400, detail="Monday MCP auth is disabled")
+    try:
+        payload = start_monday_oauth(username=username, redirect_uri=redirect_uri)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, **payload}
+
+
+@app.get("/auth/monday/callback")
+def monday_callback(
+    state: str,
+    code: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+):
+    """Complete monday OAuth callback and redirect user back to chat."""
+    try:
+        complete_monday_oauth_callback(
+            state=state,
+            code=code,
+            error=error,
+            error_description=error_description,
+        )
+    except Exception as e:
+        return RedirectResponse(
+            url=_frontend_redirect_url(f"/chat?monday_oauth=error&reason={quote(str(e), safe='')}"),
+            status_code=302,
+        )
+    return RedirectResponse(url=_frontend_redirect_url("/chat?monday_oauth=ok"), status_code=302)
+
+
+@app.post("/auth/monday/disconnect")
+def monday_disconnect(authorization: str | None = Header(default=None)):
+    """Disconnect monday account for current user."""
+    username = _get_username(authorization, enforce_password_rotation=False)
+    disconnect_monday(username)
+    return {"ok": True}
+
+
 @app.post("/admin/users/provision")
 def admin_user_provision(
+    request: Request,
     body: AdminProvisionUserRequest,
     authorization: str | None = Header(default=None),
 ):
@@ -889,13 +1279,22 @@ def admin_user_provision(
     User must change password on first login.
     """
     admin_username = _require_admin(authorization)
+    new_username = body.username.strip()
+    role = body.role.strip().lower()
     ok, result = provision_user_with_temp_password(
         created_by_username=admin_username,
-        username=body.username.strip(),
-        role=body.role.strip().lower(),
+        username=new_username,
+        role=role,
     )
     if not ok:
         raise HTTPException(status_code=400, detail=result)
+    write_audit(
+        "provision_user",
+        admin_username,
+        target=new_username,
+        details={"role": role},
+        ip_address=request.client.host if request.client else "",
+    )
     return {"ok": True, "user": result}
 
 
@@ -1014,8 +1413,112 @@ def chat_history(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/chat/conversations")
+def chat_conversations(
+    authorization: str | None = Header(default=None),
+    max_conversations: int = Query(default=200, ge=1, le=2000),
+    scan_checkpoints: int = Query(default=5000, ge=100, le=50000),
+):
+    """Return conversation list for current user, discovered from persisted checkpoints."""
+    username = _get_username(authorization)
+    cp = getattr(agent, "checkpointer", None)
+    list_fn = getattr(cp, "list", None) if cp is not None else None
+    if not callable(list_fn):
+        return {
+            "conversations": [{"id": "default", "title": "Основной диалог"}],
+            "warning": "Checkpointer does not support thread listing in this runtime.",
+        }
+
+    meta_map = list_conversation_meta_for_user(username)
+    discovered: list[dict] = []
+    seen_ids: set[str] = set()
+    scanned = 0
+    prefix = f"{username}:"
+    for item in list_fn(None, limit=scan_checkpoints):
+        scanned += 1
+        conf = getattr(item, "config", None) or {}
+        confg = conf.get("configurable", {}) if isinstance(conf, dict) else {}
+        thread_id = str(confg.get("thread_id") or "").strip()
+        if not thread_id:
+            continue
+        thread_username, conv_id = _parse_thread_id(thread_id)
+        if thread_username != username:
+            continue
+        if thread_id.startswith(prefix) and conv_id in seen_ids:
+            continue
+        seen_ids.add(conv_id)
+        stored = meta_map.get(conv_id) or {}
+        discovered.append(
+            {
+                "id": conv_id,
+                "title": str(stored.get("title") or ("Основной диалог" if conv_id == "default" else conv_id)),
+                "last_activity_ts": str(
+                    getattr(item, "checkpoint", {}).get("ts", "")
+                    or stored.get("updated_at")
+                    or ""
+                ),
+            }
+        )
+        if len(discovered) >= max_conversations:
+            break
+
+    for conv_id, stored in meta_map.items():
+        if conv_id in seen_ids:
+            continue
+        seen_ids.add(conv_id)
+        discovered.append(
+            {
+                "id": conv_id,
+                "title": str(stored.get("title") or conv_id),
+                "last_activity_ts": str(stored.get("updated_at") or stored.get("created_at") or ""),
+            }
+        )
+        if len(discovered) >= max_conversations:
+            break
+
+    if "default" not in seen_ids:
+        stored_default = meta_map.get("default") or {}
+        discovered.insert(
+            0,
+            {
+                "id": "default",
+                "title": str(stored_default.get("title") or "Основной диалог"),
+                "last_activity_ts": str(stored_default.get("updated_at") or ""),
+            },
+        )
+    return {
+        "conversations": discovered,
+        "scanned_checkpoints": scanned,
+    }
+
+
+@app.post("/chat/conversations")
+def create_chat_conversation(
+    body: ConversationCreateRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Create or upsert one conversation title for current user."""
+    username = _get_username(authorization)
+    conv_id = (body.id or "").strip()
+    title = (body.title or "").strip()
+    if not conv_id:
+        raise HTTPException(status_code=400, detail="Conversation id is required")
+    if not title:
+        raise HTTPException(status_code=400, detail="Conversation title is required")
+    saved = upsert_conversation_meta_for_user(username, conv_id, title)
+    return {
+        "conversation": {
+            "id": saved["id"],
+            "title": saved["title"],
+            "last_activity_ts": saved["updated_at"],
+        }
+    }
+
+
 @app.post("/chat", response_model=ChatResponse)
+@limiter.limit(RAG_RATE_LIMIT_CHAT)
 def chat(
+    request: Request,
     body: ChatRequest,
     authorization: str | None = Header(default=None),
     conversation_id: str | None = Query(default=None),
@@ -1037,6 +1540,7 @@ def chat(
             ),
         )
     try:
+        run_id = f"chat_{int(time.time() * 1000)}"
         tool_events: list[dict] = []
         def on_tool_event(event: dict):
             # Keep event payload explicit and safe for UI.
@@ -1052,10 +1556,77 @@ def chat(
 
         extra_tools = []
         selected_model_name: str | None = None
+        monday_intent = bool(RAG_ENABLE_MONDAY_MCP and detect_monday_intent(user_message))
+        monday_write_intent = bool(monday_intent and detect_monday_write_intent(user_message))
+        monday_status_snapshot = get_monday_status(username) if RAG_ENABLE_MONDAY_MCP else None
+        include_monday_tools = bool(
+            RAG_ENABLE_MONDAY_MCP
+            and monday_status_snapshot
+            and monday_status_snapshot.connected
+            and (
+                not RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY
+                or monday_intent
+            )
+        )
+        if monday_intent:
+            on_tool_event(
+                {
+                    "source": "system",
+                    "tool_name": "monday_intent_detected",
+                    "status": "success" if include_monday_tools else "error",
+                    "message": (
+                        "Monday intent detected; monday tools enabled for this request."
+                        if include_monday_tools
+                        else "Monday intent detected, but monday account is not connected."
+                    ),
+                    "ts": int(time.time() * 1000),
+                }
+            )
+            if not include_monday_tools:
+                return ChatResponse(
+                    response=(
+                        "Чтобы работать с Monday из чата, подключите ваш monday аккаунт: "
+                        "откройте Настройки аккаунта -> Monday -> Подключить, завершите OAuth, и повторите запрос."
+                    ),
+                    sources=[],
+                    tool_events=tool_events,
+                )
+        if monday_write_intent and "апдейт" in user_message.lower() and ("в задачу" in user_message.lower() or "task" in user_message.lower() or "item" in user_message.lower()):
+            # Guard against malformed write calls that frequently fail MCP validation.
+            if len(user_message.strip()) < 30:
+                return ChatResponse(
+                    response=(
+                        "Для изменения задачи в Monday не хватает деталей. "
+                        "Укажите целевой элемент и текст апдейта (`body`) в одном сообщении."
+                    ),
+                    sources=[],
+                    tool_events=tool_events,
+                )
 
         thread_id = _make_thread_id(username, conversation_id)
-        config = {"configurable": {"thread_id": thread_id}}
-        runtime_agent = build_agent(extra_tools=extra_tools, model_name=selected_model_name)
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": RAG_MAX_AGENT_RECURSION_LIMIT,
+        }
+        runtime_agent = build_agent(
+            extra_tools=extra_tools,
+            model_name=selected_model_name,
+            monday_username=username,
+            include_monday_tools=include_monday_tools,
+            include_retrieve_context=not monday_write_intent,
+        )
+        begin_monday_call_stats()
+        repaired = _repair_conversation_history_for_provider(runtime_agent, config)
+        if repaired:
+            on_tool_event(
+                {
+                    "source": "system",
+                    "tool_name": "history_repair",
+                    "status": "success",
+                    "message": "Conversation history was repaired to remove invalid tool protocol blocks.",
+                    "ts": int(time.time() * 1000),
+                }
+            )
         # Prevent unlimited growth of persisted thread context, which can trigger
         # strict provider TPM limits (especially on Anthropic plans).
         if RAG_MAX_HISTORY_MESSAGES > 0:
@@ -1085,6 +1656,17 @@ def chat(
             raise ValueError("Model returned empty response content")
         _ensure_assistant_turn_persisted(runtime_agent, config, content)
         sources = get_last_sources()
+        monday_stats = get_monday_call_stats()
+        if monday_write_intent and include_monday_tools and int(monday_stats.get("write_calls", 0)) == 0:
+            return ChatResponse(
+                response=(
+                    "Не удалось безопасно выполнить запись в Monday в этом ответе. "
+                    "Укажите точный элемент/задачу и текст апдейта (`body`) одной фразой, например: "
+                    "`добавь апдейт в item 12345: <текст>`."
+                ),
+                sources=[],
+                tool_events=tool_events,
+            )
         log_append(username=username, question=user_message, answer=content, sources=sources)
         return ChatResponse(response=content, sources=sources, tool_events=tool_events)
     except Exception as e:
@@ -1103,6 +1685,9 @@ def chat(
                     extra_tools=extra_tools,
                     model_name=selected_model_name,
                     use_response_format=False,
+                    monday_username=username,
+                    include_monday_tools=include_monday_tools,
+                    include_retrieve_context=not monday_write_intent,
                 )
                 retry_response = unstructured_agent.invoke(
                     {"messages": [{"role": "user", "content": user_message}]},
@@ -1145,7 +1730,13 @@ def chat(
                         "ts": int(time.time() * 1000),
                     }
                 )
-                fallback_agent = build_agent(extra_tools=extra_tools, model_name=RAG_FALLBACK_MODEL)
+                fallback_agent = build_agent(
+                    extra_tools=extra_tools,
+                    model_name=RAG_FALLBACK_MODEL,
+                    monday_username=username,
+                    include_monday_tools=include_monday_tools,
+                    include_retrieve_context=not monday_write_intent,
+                )
                 response = fallback_agent.invoke(
                     {"messages": [{"role": "user", "content": user_message}]},
                     config=config,
@@ -1194,6 +1785,25 @@ def chat(
                     "Подождите 10–30 секунд и повторите запрос."
                 ),
             )
+        if _is_monday_tool_validation_error(e):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Monday вернул ошибку валидации аргументов. "
+                    "Уточните целевой элемент и текст апдейта (`body`) и повторите запрос."
+                ),
+            )
+        if "graphrecursionerror" in str(type(e)).lower() or "recursion limit" in str(e).lower():
+            monday_stats = get_monday_call_stats() if "get_monday_call_stats" in globals() else {}
+            return ChatResponse(
+                response=(
+                    "Не удалось завершить запрос без повторяющихся вызовов инструментов. "
+                    "Сформулируйте задачу короче и отдельно: "
+                    "1) найти нужный item, 2) добавить апдейт с точным текстом."
+                ),
+                sources=[],
+                tool_events=locals().get("tool_events", []),
+            )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1210,10 +1820,72 @@ def delete_chat_conversation(
     thread_id = _make_thread_id(username, conv)
     try:
         delete_conversation_state(thread_id)
+        delete_conversation_meta_for_user(username, conv)
         return {"ok": True, "conversation_id": conv}
     except Exception as e:
         logger.exception("Failed to delete conversation")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/admin/history/conversations")
+def admin_delete_all_conversations(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    scan_checkpoints: int = Query(default=50000, ge=100, le=500000),
+):
+    """Delete all persisted chat conversation threads globally. Admin only."""
+    admin_username = _require_admin(authorization)
+    cp = getattr(agent, "checkpointer", None)
+    list_fn = getattr(cp, "list", None) if cp is not None else None
+    if not callable(list_fn):
+        return {
+            "ok": False,
+            "scanned_checkpoints": 0,
+            "discovered_threads": 0,
+            "deleted_threads": 0,
+            "failed_threads": 0,
+            "warning": "Checkpointer does not support thread listing in this runtime.",
+        }
+
+    discovered_thread_ids: list[str] = []
+    seen: set[str] = set()
+    scanned = 0
+    for item in list_fn(None, limit=scan_checkpoints):
+        scanned += 1
+        conf = getattr(item, "config", None) or {}
+        confg = conf.get("configurable", {}) if isinstance(conf, dict) else {}
+        thread_id = str(confg.get("thread_id") or "").strip()
+        if not thread_id or thread_id in seen:
+            continue
+        seen.add(thread_id)
+        discovered_thread_ids.append(thread_id)
+
+    deleted = 0
+    failed = 0
+    failed_ids: list[str] = []
+    for thread_id in discovered_thread_ids:
+        try:
+            delete_conversation_state(thread_id)
+            deleted += 1
+        except Exception:
+            failed += 1
+            if len(failed_ids) < 20:
+                failed_ids.append(thread_id)
+
+    write_audit(
+        "delete_all_conversations",
+        admin_username,
+        details={"discovered": len(discovered_thread_ids), "deleted": deleted, "failed": failed},
+        ip_address=request.client.host if request.client else "",
+    )
+    return {
+        "ok": failed == 0,
+        "scanned_checkpoints": scanned,
+        "discovered_threads": len(discovered_thread_ids),
+        "deleted_threads": deleted,
+        "failed_threads": failed,
+        "failed_thread_ids_sample": failed_ids,
+    }
 
 
 def _safe_relative_path(path_str: str) -> Path | None:
@@ -1298,8 +1970,8 @@ def knowledge_pdf_text_put(
     authorization: str | None = Header(default=None),
 ):
     """
-    Save RAG text override (sidecar .rag.txt). First non-empty save renames *.pdf to *_changed.pdf
-    when the stem does not already end with _changed. Empty text removes the sidecar and reindexes from PDF.
+    Save RAG text override (sidecar .rag.txt) for a PDF without moving the file.
+    Empty text removes the sidecar and reverts to PyPDF extraction.
     """
     _require_admin(authorization)
     target = _safe_relative_path(body.path)
@@ -1308,53 +1980,29 @@ def knowledge_pdf_text_put(
     if not target.is_file():
         raise HTTPException(status_code=404, detail="Файл не найден")
 
+    rel = _rel_under_knowledge(target)
     text_stripped = (body.text or "").strip()
+    sc = rag_sidecar_path(target)
 
     if not text_stripped:
-        sc = rag_sidecar_path(target)
         if sc.is_file():
             try:
                 sc.unlink()
             except OSError as e:
                 raise HTTPException(status_code=500, detail=str(e))
         invalidate_vector_store()
-        upsert_pdf_document(_rel_under_knowledge(target))
-        return {"ok": True, "path": _rel_under_knowledge(target), "source": "extracted"}
+        upsert_pdf_document(rel)
+        return {"ok": True, "path": rel, "source": "extracted"}
 
-    final_pdf = target
-    stem = target.stem
-    if not stem.endswith("_changed"):
-        new_pdf = target.parent / f"{stem}_changed.pdf"
-        if new_pdf.exists():
-            raise HTTPException(
-                status_code=400,
-                detail="Файл с таким именем уже существует; удалите или переименуйте вручную.",
-            )
-        rel_old = _rel_under_knowledge(target)
-        sc_old = rag_sidecar_path(target)
-        try:
-            target.rename(new_pdf)
-        except OSError as e:
-            raise HTTPException(status_code=500, detail=str(e))
-        if sc_old.is_file():
-            sc_new = rag_sidecar_path(new_pdf)
-            try:
-                sc_old.rename(sc_new)
-            except OSError as e:
-                raise HTTPException(status_code=500, detail=str(e))
-        rename_pdf_metadata(rel_old, _rel_under_knowledge(new_pdf))
-        final_pdf = new_pdf
-
-    sc_final = rag_sidecar_path(final_pdf)
     try:
-        sc_final.parent.mkdir(parents=True, exist_ok=True)
-        sc_final.write_text(text_stripped, encoding="utf-8")
+        sc.parent.mkdir(parents=True, exist_ok=True)
+        sc.write_text(text_stripped, encoding="utf-8")
     except OSError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     invalidate_vector_store()
-    upsert_pdf_document(_rel_under_knowledge(final_pdf))
-    return {"ok": True, "path": _rel_under_knowledge(final_pdf), "source": "override"}
+    upsert_pdf_document(rel)
+    return {"ok": True, "path": rel, "source": "override"}
 
 
 @app.delete("/knowledge/files")
@@ -1529,6 +2177,21 @@ def knowledge_item_delete(item_id: str, authorization: str | None = Header(defau
     invalidate_vector_store()
     delete_knowledge_item_document(item_id)
     return {"ok": True, "items": ki_list()}
+
+
+@app.get("/{route_path:path}", response_class=HTMLResponse)
+def spa_fallback(route_path: str, accept: str | None = Header(default=None)):
+    """
+    Serve the React app shell for hard-refreshes on client-side routes.
+
+    Keep asset/API misses as 404s so fetch failures do not silently receive HTML.
+    """
+    normalized = (route_path or "").strip("/")
+    if "." in Path(normalized).name:
+        raise HTTPException(status_code=404, detail="Not found")
+    if accept and "text/html" not in accept.lower():
+        raise HTTPException(status_code=404, detail="Not found")
+    return _serve_frontend_or_legacy(STATIC_DIR / "index.html")
 
 
 def run():

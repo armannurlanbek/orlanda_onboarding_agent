@@ -212,6 +212,58 @@ def rag_sidecar_path(pdf_path: Path) -> Path:
     return pdf_path.with_name(pdf_path.stem + ".rag.txt")
 
 
+def _reflow_pdf_text(text: str) -> str:
+    """
+    Merge fragmented lines produced by PDF extraction into readable paragraphs.
+
+    PyPDF often emits one word (or a few words) per line because it follows the
+    PDF content stream order rather than visual paragraphs. This heuristic joins
+    lines that look like mid-sentence fragments while preserving real breaks:
+    paragraph gaps (blank lines), sentence endings, list items, and headings.
+    """
+    import re
+
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    # Paragraphs are separated by one or more blank lines.
+    blocks = re.split(r"\n{2,}", text.strip())
+    out: list[str] = []
+
+    for block in blocks:
+        lines = [l.strip() for l in block.splitlines()]
+        merged: list[str] = []
+        buf = ""
+        for line in lines:
+            if not line:
+                continue
+            if not buf:
+                buf = line
+                continue
+            # Hyphenated line-break: glue without space.
+            if buf.endswith("-"):
+                buf = buf[:-1] + line
+                continue
+            # Keep line as a new paragraph unit when:
+            # - the previous buffer ends a sentence
+            # - this line looks like a list item (-, •, 1., etc.)
+            # - this line looks like an all-caps heading
+            is_new_unit = (
+                buf[-1] in ".!?:"
+                or re.match(r"^[\-•●◦▪▸►]\s|^\d+[.)]\s", line)
+                or (len(line) < 60 and line.upper() == line and len(line.split()) > 1)
+            )
+            if is_new_unit:
+                merged.append(buf)
+                buf = line
+            else:
+                buf += " " + line
+        if buf:
+            merged.append(buf)
+        if merged:
+            out.append("\n".join(merged))
+
+    return "\n\n".join(out)
+
+
 def extract_pdf_plain_text(pdf_path: Path) -> str:
     """Concatenate page text from a PDF (for API preview when no override exists)."""
     from pypdf import PdfReader
@@ -225,7 +277,8 @@ def extract_pdf_plain_text(pdf_path: Path) -> str:
                 parts.append(t)
         except Exception:
             continue
-    return "\n\n".join(parts).strip()
+    raw = "\n\n".join(parts).strip()
+    return _reflow_pdf_text(raw)
 
 
 def _load_pdf_documents(pdf_path: Path) -> list[Document]:
