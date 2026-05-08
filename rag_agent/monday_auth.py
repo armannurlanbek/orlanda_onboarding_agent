@@ -95,6 +95,12 @@ def _patch_anthropic_tool_converter() -> None:
                 original_cls = _orig(self)
                 if original_cls is None:
                     return original_cls
+                # Some tools return a raw dict schema instead of a Pydantic model class.
+                if isinstance(original_cls, dict):
+                    return _strip(_copy.deepcopy(original_cls))
+                # Guard: if it's not a class with model_json_schema, return as-is.
+                if not hasattr(original_cls, "model_json_schema"):
+                    return original_cls
                 cls_id = id(original_cls)
                 if cls_id in _cache:
                     return _cache[cls_id]
