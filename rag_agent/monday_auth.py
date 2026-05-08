@@ -94,17 +94,60 @@ def _patch_langchain_subset_model_for_anthropic() -> None:
                 pass
         return new_field
 
-    def _patched(name, model, field_names):
+    def _patched(*args, **kwargs):
         try:
-            fields = {}
-            for fn in field_names:
-                field = model.model_fields[fn]
-                cleaned_field = _strip_field(field)
-                cleaned_ann = _strip_annotation(field.annotation)
-                fields[fn] = (cleaned_ann, cleaned_field)
-            return _create_model(name, **fields)
+            result = original(*args, **kwargs)
         except Exception:
-            return original(name, model, field_names)
+            raise
+        try:
+            for fname, finfo in list(getattr(result, "model_fields", {}).items()):
+                md = list(getattr(finfo, "metadata", None) or [])
+                cleaned_md = [m for m in md if not _is_constraint(m)]
+                if len(cleaned_md) != len(md):
+                    try:
+                        finfo.metadata = cleaned_md
+                    except Exception:
+                        pass
+                for attr in ("ge", "le", "gt", "lt", "multiple_of"):
+                    try:
+                        if getattr(finfo, attr, None) is not None:
+                            setattr(finfo, attr, None)
+                    except Exception:
+                        pass
+            try:
+                result.model_rebuild(force=True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        try:
+            _orig_mjs = result.model_json_schema
+
+            def _strip_json(obj):
+                if isinstance(obj, dict):
+                    if obj.get("type") in ("number", "integer"):
+                        for k in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"):
+                            obj.pop(k, None)
+                    for v in list(obj.values()):
+                        _strip_json(v)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        _strip_json(item)
+                return obj
+
+            def _patched_mjs(*a, **kw):
+                schema = _orig_mjs(*a, **kw)
+                return _strip_json(_copy.deepcopy(schema))
+
+            try:
+                result.model_json_schema = _patched_mjs  # type: ignore[assignment]
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        return result
 
     _patched._anthropic_patched = True  # type: ignore[attr-defined]
     _tb._create_subset_model = _patched
