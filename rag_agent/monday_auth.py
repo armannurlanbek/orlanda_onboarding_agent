@@ -44,12 +44,19 @@ logger = logging.getLogger(__name__)
 
 
 def _patch_anthropic_tool_converter() -> None:
-    """Patch langchain-anthropic's tool converter to strip unsupported constraints.
+    """Patch langchain tool schema generation to strip Anthropic-incompatible constraints.
 
-    Anthropic's API rejects some JSON Schema constraints (e.g. number and array
-    bound constraints) in tool definitions.
-    `convert_to_anthropic_tool` builds the exact dict sent over the wire — cleaning
-    its output is the most direct fix and bypasses Pydantic schema caching issues.
+    Anthropic's API rejects JSON Schema constraints like minimum/maximum on number types
+    and minItems/maxItems on arrays. Previous attempts patched module-level functions like
+    convert_to_anthropic_tool, but those fail due to import aliasing: chat_models.py does
+    `from .utils import convert_to_anthropic_tool` at import time, so replacing the module
+    attribute has no effect on its internal local binding.
+
+    The reliable fix is to patch BaseTool.tool_call_schema at the CLASS level. Every
+    convert_to_anthropic_tool call accesses tool.tool_call_schema (a property on BaseTool)
+    to get the Pydantic model class, then calls .model_json_schema() on it. Patching the
+    property here means the stripped schema is returned regardless of how or from where
+    convert_to_anthropic_tool was imported.
     """
     import copy as _copy
 
@@ -63,7 +70,7 @@ def _patch_anthropic_tool_converter() -> None:
         if isinstance(obj, dict):
             obj_type = str(obj.get("type") or "").strip().lower()
             for k in _STRIP_KEYS_BY_TYPE.get(obj_type, ()):
-                    obj.pop(k, None)
+                obj.pop(k, None)
             for v in list(obj.values()):
                 _strip(v)
         elif isinstance(obj, list):
@@ -71,7 +78,50 @@ def _patch_anthropic_tool_converter() -> None:
                 _strip(item)
         return obj
 
-    def _wrap(module, attr_name: str) -> bool:
+    patched_any = False
+
+    # PRIMARY FIX: patch BaseTool.tool_call_schema property.
+    # This is the definitive approach — it patches at the class level so every tool
+    # instance returns a clean schema regardless of import aliasing in langchain_anthropic.
+    try:
+        from langchain_core.tools import BaseTool as _BaseTool
+
+        _orig_tcs_fget = _BaseTool.tool_call_schema.fget
+        if _orig_tcs_fget is not None and not getattr(_orig_tcs_fget, "_anthropic_strip_patched", False):
+            # Cache stripped classes by original class id to avoid recreating on every call.
+            _tcs_strip_cache: dict = {}
+
+            def _patched_tcs_fget(self, _orig=_orig_tcs_fget, _cache=_tcs_strip_cache):
+                original_cls = _orig(self)
+                if original_cls is None:
+                    return original_cls
+                cls_id = id(original_cls)
+                if cls_id in _cache:
+                    return _cache[cls_id]
+                # Capture the original model_json_schema before subclassing so the
+                # override can call it without infinite recursion.
+                _orig_mjs = original_cls.model_json_schema
+
+                class _Stripped(original_cls):  # type: ignore[valid-type]
+                    @classmethod
+                    def model_json_schema(cls, *args, **kwargs):
+                        schema = _orig_mjs(*args, **kwargs)
+                        return _strip(_copy.deepcopy(schema))
+
+                _Stripped.__name__ = original_cls.__name__
+                _Stripped.__qualname__ = original_cls.__qualname__
+                _cache[cls_id] = _Stripped
+                return _Stripped
+
+            _patched_tcs_fget._anthropic_strip_patched = True  # type: ignore[attr-defined]
+            _BaseTool.tool_call_schema = property(_patched_tcs_fget)
+            patched_any = True
+    except Exception:
+        pass
+
+    # BELT-AND-SUSPENDERS: also patch output dicts from module-level converters
+    # (works when the module attribute IS the one called, e.g. from external code).
+    def _wrap_fn(module, attr_name: str) -> bool:
         original = getattr(module, attr_name, None)
         if original is None or getattr(original, "_anthropic_strip_patched", False):
             return False
@@ -88,48 +138,23 @@ def _patch_anthropic_tool_converter() -> None:
         setattr(module, attr_name, _patched)
         return True
 
-    patched_any = False
-
-    # 1. langchain_anthropic.chat_models.convert_to_anthropic_tool — final dict to API
     try:
         import langchain_anthropic.chat_models as _ac_chat
-        if _wrap(_ac_chat, "convert_to_anthropic_tool"):
+        if _wrap_fn(_ac_chat, "convert_to_anthropic_tool"):
             patched_any = True
     except Exception:
         pass
 
-    # 2. Same symbol on the package root, in case it's imported from there
     try:
         import langchain_anthropic as _ac_root
-        if _wrap(_ac_root, "convert_to_anthropic_tool"):
+        if _wrap_fn(_ac_root, "convert_to_anthropic_tool"):
             patched_any = True
     except Exception:
         pass
 
-    # 3. Sibling module location used by some versions
-    try:
-        import langchain_anthropic._client as _ac_client  # type: ignore[import-not-found]
-        if _wrap(_ac_client, "convert_to_anthropic_tool"):
-            patched_any = True
-    except Exception:
-        pass
-
-    # 4. Belt-and-suspenders: clean langchain_core's openai-tool converter too
     try:
         import langchain_core.utils.function_calling as _fc
-
-        original = getattr(_fc, "convert_to_openai_tool", None)
-        if original is not None and not getattr(original, "_anthropic_strip_patched", False):
-            def _patched_oai(*args, **kwargs):
-                result = original(*args, **kwargs)
-                if isinstance(result, dict):
-                    cleaned = _copy.deepcopy(result)
-                    _strip(cleaned)
-                    return cleaned
-                return result
-
-            _patched_oai._anthropic_strip_patched = True  # type: ignore[attr-defined]
-            _fc.convert_to_openai_tool = _patched_oai
+        if _wrap_fn(_fc, "convert_to_openai_tool"):
             patched_any = True
     except Exception:
         pass
