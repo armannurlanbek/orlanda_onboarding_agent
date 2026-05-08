@@ -290,6 +290,113 @@ export const api = {
         toolEvents: Array.isArray(data.tool_events) ? data.tool_events.map(normalizeEvent) : [],
       };
     },
+    /**
+     * Streaming chat. Calls `/chat/stream` and invokes callbacks as SSE events arrive.
+     * onDelta — every text chunk; onToolStart/onToolEnd — tool activity; onDone — final
+     * payload with sources + tool_events; onError — fatal error string.
+     * Returns an AbortController so the caller can cancel.
+     */
+    sendMessageStream(
+      token: string,
+      conversationId: string,
+      message: string,
+      callbacks: {
+        onDelta?: (text: string) => void;
+        onToolStart?: (name: string) => void;
+        onToolEnd?: (name: string, status: "success" | "error") => void;
+        onDone?: (payload: {
+          response: string;
+          sources: Array<{ file: string; page?: number }>;
+          toolEvents: ToolEvent[];
+        }) => void;
+        onError?: (msg: string) => void;
+      },
+    ): AbortController {
+      const controller = new AbortController();
+      (async () => {
+        try {
+          const res = await fetch(makeUrl(`/chat/stream?conversation_id=${encodeURIComponent(conversationId)}`), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ message }),
+            signal: controller.signal,
+          });
+          if (!res.ok || !res.body) {
+            const errText = await parseError(res);
+            callbacks.onError?.(errText);
+            return;
+          }
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            // SSE messages are separated by blank lines (\n\n)
+            let sepIdx;
+            while ((sepIdx = buffer.indexOf("\n\n")) !== -1) {
+              const rawEvent = buffer.slice(0, sepIdx);
+              buffer = buffer.slice(sepIdx + 2);
+              const dataLine = rawEvent
+                .split("\n")
+                .find((l) => l.startsWith("data:"));
+              if (!dataLine) continue;
+              const payloadStr = dataLine.slice(5).trim();
+              if (!payloadStr) continue;
+              try {
+                const payload = JSON.parse(payloadStr);
+                switch (payload.type) {
+                  case "delta":
+                    if (typeof payload.text === "string") callbacks.onDelta?.(payload.text);
+                    break;
+                  case "tool_start":
+                    callbacks.onToolStart?.(String(payload.name || ""));
+                    break;
+                  case "tool_end":
+                    callbacks.onToolEnd?.(
+                      String(payload.name || ""),
+                      payload.status === "error" ? "error" : "success",
+                    );
+                    break;
+                  case "done":
+                    callbacks.onDone?.({
+                      response: String(payload.response || ""),
+                      sources: Array.isArray(payload.sources)
+                        ? payload.sources.map((s: any) => ({
+                            file: String(s.file || ""),
+                            page:
+                              s.page == null
+                                ? undefined
+                                : Number.isFinite(Number(s.page))
+                                ? Number(s.page) + 1
+                                : undefined,
+                          }))
+                        : [],
+                      toolEvents: Array.isArray(payload.tool_events)
+                        ? payload.tool_events.map(normalizeEvent)
+                        : [],
+                    });
+                    break;
+                  case "error":
+                    callbacks.onError?.(String(payload.message || "Ошибка стриминга"));
+                    break;
+                }
+              } catch {
+                // ignore malformed event
+              }
+            }
+          }
+        } catch (e) {
+          if ((e as DOMException)?.name === "AbortError") return;
+          callbacks.onError?.(e instanceof Error ? e.message : "Ошибка соединения");
+        }
+      })();
+      return controller;
+    },
     touchConversation(_conversationId: string): void {
       // No-op: conversation ordering is now backend-derived via /chat/conversations.
     },

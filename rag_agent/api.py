@@ -9,9 +9,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
+import asyncio
+
 from fastapi import FastAPI, HTTPException, Header, Request, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -1805,6 +1807,249 @@ def chat(
                 tool_events=locals().get("tool_events", []),
             )
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/stream")
+@limiter.limit(RAG_RATE_LIMIT_CHAT)
+async def chat_stream(
+    request: Request,
+    body: ChatRequest,
+    authorization: str | None = Header(default=None),
+    conversation_id: str | None = Query(default=None),
+):
+    """Streaming version of /chat using Server-Sent Events.
+
+    Emits SSE messages of the form `data: {json}\\n\\n` with one of these payloads:
+      - {"type":"delta","text":"..."}        — chunk of assistant text
+      - {"type":"tool_start","name":"..."}   — tool invocation began
+      - {"type":"tool_end","name":"...","status":"success|error"}
+      - {"type":"done","response":"...","sources":[...],"tool_events":[...]}
+      - {"type":"error","message":"..."}     — fatal error; client should show toast
+    """
+    username = _get_username(authorization)
+    user_message = (body.message or "").strip()
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Сообщение не должно быть пустым")
+    if RAG_MAX_USER_MESSAGE_CHARS > 0 and len(user_message) > RAG_MAX_USER_MESSAGE_CHARS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Сообщение слишком длинное ({len(user_message)} символов). "
+                f"Максимум: {RAG_MAX_USER_MESSAGE_CHARS}."
+            ),
+        )
+
+    tool_events: list[dict] = []
+
+    def push_event(source: str, tool_name: str, status: str, message: str = "") -> None:
+        tool_events.append(
+            {
+                "source": source,
+                "tool_name": tool_name,
+                "status": status,
+                "message": message,
+                "ts": int(time.time() * 1000),
+            }
+        )
+
+    monday_intent = bool(RAG_ENABLE_MONDAY_MCP and detect_monday_intent(user_message))
+    monday_write_intent = bool(monday_intent and detect_monday_write_intent(user_message))
+    monday_status_snapshot = get_monday_status(username) if RAG_ENABLE_MONDAY_MCP else None
+    include_monday_tools = bool(
+        RAG_ENABLE_MONDAY_MCP
+        and monday_status_snapshot
+        and monday_status_snapshot.connected
+        and (not RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY or monday_intent)
+    )
+
+    if monday_intent:
+        push_event(
+            "system",
+            "monday_intent_detected",
+            "success" if include_monday_tools else "error",
+            (
+                "Monday intent detected; monday tools enabled for this request."
+                if include_monday_tools
+                else "Monday intent detected, but monday account is not connected."
+            ),
+        )
+
+    if monday_intent and not include_monday_tools:
+        msg = (
+            "Чтобы работать с Monday из чата, подключите ваш monday аккаунт: "
+            "откройте Настройки аккаунта → Monday → Подключить, завершите OAuth, и повторите запрос."
+        )
+
+        async def _no_monday_gen():
+            yield f"data: {json.dumps({'type': 'delta', 'text': msg}, ensure_ascii=False)}\n\n"
+            yield (
+                "data: "
+                + json.dumps(
+                    {"type": "done", "response": msg, "sources": [], "tool_events": tool_events},
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+
+        return StreamingResponse(
+            _no_monday_gen(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
+
+    thread_id = _make_thread_id(username, conversation_id)
+    config = {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": RAG_MAX_AGENT_RECURSION_LIMIT,
+    }
+    # NOTE: build_agent must run off the event loop. Inside it, MCP tools are
+    # fetched via `_run_async_sync(client.get_tools())`, which short-circuits to
+    # `None` (returning zero Monday tools) when invoked from a thread that
+    # already has a running loop. Running it via `asyncio.to_thread` puts the
+    # call on a worker without a loop, so `asyncio.run` succeeds and the Monday
+    # toolset actually loads. Same reason for the history prep below.
+    runtime_agent = await asyncio.to_thread(
+        build_agent,
+        extra_tools=[],
+        monday_username=username,
+        include_monday_tools=include_monday_tools,
+        include_retrieve_context=not monday_write_intent,
+    )
+    begin_monday_call_stats()
+    try:
+        if await asyncio.to_thread(_repair_conversation_history_for_provider, runtime_agent, config):
+            push_event("system", "history_repair", "success", "Conversation history was repaired.")
+        if RAG_MAX_HISTORY_MESSAGES > 0:
+            try:
+                if await asyncio.to_thread(_compact_conversation_history, runtime_agent, config):
+                    push_event("system", "history_guard", "success", "Conversation history was compacted.")
+            except Exception:
+                pass
+    except Exception:
+        logger.exception("history prep failed in chat_stream")
+
+    async def event_generator():
+        accumulated_parts: list[str] = []
+        final_content = ""
+        try:
+            async for ev in runtime_agent.astream_events(
+                {"messages": [{"role": "user", "content": user_message}]},
+                config=config,
+                context=Context(user_id=username),
+                version="v2",
+            ):
+                kind = ev.get("event", "")
+                if kind == "on_chat_model_stream":
+                    chunk = ev.get("data", {}).get("chunk")
+                    content = getattr(chunk, "content", None)
+                    text = ""
+                    if isinstance(content, str):
+                        text = content
+                    elif isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict):
+                                if block.get("type") == "text":
+                                    text += str(block.get("text") or "")
+                            elif isinstance(block, str):
+                                text += block
+                    if text:
+                        accumulated_parts.append(text)
+                        yield (
+                            "data: "
+                            + json.dumps({"type": "delta", "text": text}, ensure_ascii=False)
+                            + "\n\n"
+                        )
+                elif kind == "on_tool_start":
+                    tool_name = str(ev.get("name") or "")
+                    push_event("tool", tool_name, "start")
+                    yield (
+                        "data: "
+                        + json.dumps({"type": "tool_start", "name": tool_name}, ensure_ascii=False)
+                        + "\n\n"
+                    )
+                elif kind == "on_tool_end":
+                    tool_name = str(ev.get("name") or "")
+                    output = ev.get("data", {}).get("output")
+                    output_str = ""
+                    if output is not None:
+                        try:
+                            output_str = str(output)
+                        except Exception:
+                            output_str = ""
+                    is_error = '"ok":false' in output_str.replace(" ", "") or "error" in output_str[:80].lower()
+                    push_event("tool", tool_name, "error" if is_error else "success", output_str[:200])
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "tool_end",
+                                "name": tool_name,
+                                "status": "error" if is_error else "success",
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+
+            final_content = "".join(accumulated_parts).strip()
+            if not final_content:
+                try:
+                    state = runtime_agent.get_state(config)
+                    msgs = state.values.get("messages", []) if state else []
+                    for m in reversed(msgs or []):
+                        if getattr(m, "type", "") == "ai" or getattr(m, "role", "") == "assistant":
+                            c = getattr(m, "content", None)
+                            if isinstance(c, str) and c.strip():
+                                final_content = c.strip()
+                                break
+                            if isinstance(c, list):
+                                joined = "".join(
+                                    b.get("text", "") if isinstance(b, dict) else str(b) for b in c
+                                ).strip()
+                                if joined:
+                                    final_content = joined
+                                    break
+                except Exception:
+                    pass
+
+            try:
+                _ensure_assistant_turn_persisted(runtime_agent, config, final_content or "")
+            except Exception:
+                logger.exception("Failed to persist assistant turn (stream)")
+
+            sources = get_last_sources()
+            log_append(username=username, question=user_message, answer=final_content, sources=sources)
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "done",
+                        "response": final_content,
+                        "sources": sources,
+                        "tool_events": tool_events,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+        except Exception as e:
+            logger.exception("Chat stream failed")
+            try:
+                log_append(username=username, question=user_message, answer="", sources=[], error=str(e))
+            except Exception:
+                pass
+            err_msg = str(e) or "Internal error"
+            yield (
+                "data: "
+                + json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
+                + "\n\n"
+            )
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.delete("/chat/conversation")

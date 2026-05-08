@@ -88,6 +88,50 @@ def _as_mcp_guard_result(tool_name: str, message: str, *, missing: list[str] | N
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _format_tool_error_for_model(tool_name: str, err: BaseException) -> str:
+    """Return a guard JSON the model can read and react to.
+
+    Critically, this NEVER raises — every tool exception becomes a tool message
+    so the agent loop can self-correct instead of crashing the chat. Pattern-matches
+    common Monday GraphQL errors and appends a remediation hint to nudge the model
+    toward the right next step.
+    """
+    txt = str(err or "")
+    lower = txt.lower()
+    hint = ""
+    if "column not found" in lower or "missing_column" in lower:
+        hint = (
+            "Column id was wrong. Call `get_board_info` first to fetch the real "
+            "column ids for this board, then retry with the correct id."
+        )
+    elif "request_max_complexity_exceeded" in lower or "complexityexception" in lower:
+        hint = (
+            "Monday query was too expensive. Retry with `limit<=25` and an explicit "
+            "`columnIds` list of only the columns needed for the answer."
+        )
+    elif "userunauthorizedexception" in lower or "boards permission" in lower:
+        hint = (
+            "User has no permission for this resource. Ask the user to grant access "
+            "or pick a different board."
+        )
+    elif "resourcenotfoundexception" in lower or "not found" in lower:
+        hint = (
+            "Resource does not exist or is not visible. Verify the id with `search` "
+            "or `list_workspaces`/`get_board_info` before retrying."
+        )
+    elif "mcp error -32602" in lower or "input validation error" in lower:
+        hint = (
+            "Tool arguments failed Monday validation. Re-read the schema and retry "
+            "with corrected fields (check required keys and value types)."
+        )
+    elif "timeout" in lower or "timed out" in lower:
+        hint = "Monday API timed out. Retry with a smaller request or ask the user to wait and retry."
+    msg = f"Monday tool `{tool_name}` failed: {txt}"
+    if hint:
+        msg += f" Recovery hint: {hint}"
+    return _as_mcp_guard_result(tool_name, msg)
+
+
 def _required_args_from_schema(args_schema) -> set[str]:
     if args_schema is None:
         return set()
@@ -433,13 +477,7 @@ def _ensure_sync_callable_tools(tools: list) -> list:
                     _bump_monday_call(name or "monday_tool")
                     return func(**kwargs)
                 except Exception as e:
-                    txt = str(e or "")
-                    if "MCP error -32602" in txt or "Input validation error" in txt:
-                        return _as_mcp_guard_result(
-                            name or "monday_tool",
-                            f"Monday tool validation failed for `{name or 'monday_tool'}`: {txt}",
-                        )
-                    raise
+                    return _format_tool_error_for_model(name or "monday_tool", e)
 
             async def _safe_existing_coroutine(**kwargs):
                 missing_res = _guard_and_format_missing(kwargs)
@@ -451,13 +489,7 @@ def _ensure_sync_callable_tools(tools: list) -> list:
                     _bump_monday_call(name or "monday_tool")
                     return await coroutine(**kwargs)
                 except Exception as e:
-                    txt = str(e or "")
-                    if "MCP error -32602" in txt or "Input validation error" in txt:
-                        return _as_mcp_guard_result(
-                            name or "monday_tool",
-                            f"Monday tool validation failed for `{name or 'monday_tool'}`: {txt}",
-                        )
-                    raise
+                    return _format_tool_error_for_model(name or "monday_tool", e)
 
             wrapped.append(
                 StructuredTool.from_function(
@@ -487,13 +519,7 @@ def _ensure_sync_callable_tools(tools: list) -> list:
                     _bump_monday_call(tool_name)
                     return asyncio.run(async_tool.ainvoke(kwargs))
                 except Exception as e:
-                    txt = str(e or "")
-                    if "MCP error -32602" in txt or "Input validation error" in txt:
-                        return _as_mcp_guard_result(
-                            tool_name,
-                            f"Monday tool validation failed for `{tool_name}`: {txt}",
-                        )
-                    raise
+                    return _format_tool_error_for_model(tool_name, e)
 
             return _sync_runner
 
@@ -509,13 +535,7 @@ def _ensure_sync_callable_tools(tools: list) -> list:
                 _bump_monday_call(tool_name)
                 return await coro_tool(**kwargs)
             except Exception as e:
-                txt = str(e or "")
-                if "MCP error -32602" in txt or "Input validation error" in txt:
-                    return _as_mcp_guard_result(
-                        tool_name,
-                        f"Monday tool validation failed for `{tool_name}`: {txt}",
-                    )
-                raise
+                return _format_tool_error_for_model(tool_name, e)
 
         def _make_safe_coroutine(coro_tool, tool_name: str, schema):
             async def _runner(**kwargs):

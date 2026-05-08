@@ -23,11 +23,9 @@ export function ChatMessage({ message }: { message: Message }) {
       <div className="h-8 w-8 rounded-lg bg-accent text-accent-foreground flex items-center justify-center shrink-0">
         <Sparkles className="h-4 w-4 text-primary" />
       </div>
-      <div className="flex-1 max-w-[80%] space-y-2">
-        <div className="rounded-xl rounded-tl-sm bg-card border border-border px-4 py-3 shadow-soft">
-          <div className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">
-            <MarkdownLite text={message.content} />
-          </div>
+      <div className="flex-1 max-w-[80%] space-y-2 min-w-0">
+        <div className="rounded-xl rounded-tl-sm bg-card border border-border px-4 py-3 shadow-soft overflow-hidden">
+          <MarkdownLite text={message.content} />
         </div>
 
         {message.sources && message.sources.length > 0 && (

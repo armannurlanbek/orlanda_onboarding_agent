@@ -116,26 +116,120 @@ export default function ChatPage() {
     await loadConversations(true);
   };
 
-  const send = async (text?: string) => {
+  const streamControllerRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      streamControllerRef.current?.abort();
+      streamControllerRef.current = null;
+    };
+  }, []);
+
+  const send = (text?: string) => {
     if (!token || !user) return;
-    if (user.mustChangePassword) { toast.error("Сначала смените временный пароль"); return; }
+    if (user.mustChangePassword) {
+      toast.error("Сначала смените временный пароль");
+      return;
+    }
     const msg = (text ?? input).trim();
     if (!msg || !activeId || sending) return;
     setInput("");
-    setMessages((m) => [...(m ?? []), { id: `tmp-${Date.now()}`, role: "user", content: msg, createdAt: new Date().toISOString() }]);
+
+    const userMsgId = `tmp-u-${Date.now()}`;
+    const assistantMsgId = `tmp-a-${Date.now()}`;
+    let bubbleStarted = false;
+
+    setMessages((m) => [
+      ...(m ?? []),
+      { id: userMsgId, role: "user", content: msg, createdAt: new Date().toISOString() },
+    ]);
     setSending(true);
-    try {
-      const assistant = await api.chat.sendMessage(
-        token,
-        activeId,
-        msg,
-      );
-      setMessages((m) => [...(m ?? []), assistant]);
-      api.chat.touchConversation(activeId);
-      await loadConversations();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Ошибка отправки");
-    } finally { setSending(false); }
+
+    const ensureAssistantBubble = (initialContent = "") => {
+      if (bubbleStarted) return;
+      bubbleStarted = true;
+      setMessages((m) => [
+        ...(m ?? []),
+        {
+          id: assistantMsgId,
+          role: "assistant",
+          content: initialContent,
+          createdAt: new Date().toISOString(),
+          toolEvents: [],
+        },
+      ]);
+    };
+
+    streamControllerRef.current = api.chat.sendMessageStream(token, activeId, msg, {
+      onDelta: (chunk) => {
+        if (!bubbleStarted) {
+          ensureAssistantBubble(chunk);
+        } else {
+          setMessages((m) =>
+            m?.map((x) => (x.id === assistantMsgId ? { ...x, content: x.content + chunk } : x)) ?? null,
+          );
+        }
+      },
+      onToolStart: (name) => {
+        ensureAssistantBubble();
+        setMessages((m) =>
+          m?.map((x) => {
+            if (x.id !== assistantMsgId) return x;
+            const events = [
+              ...(x.toolEvents ?? []),
+              {
+                id: `t-${Date.now()}-${name}`,
+                name,
+                status: "success" as const,
+                detail: "выполняется…",
+              },
+            ];
+            return { ...x, toolEvents: events };
+          }) ?? null,
+        );
+      },
+      onToolEnd: (name, status) => {
+        setMessages((m) =>
+          m?.map((x) => {
+            if (x.id !== assistantMsgId) return x;
+            const events = (x.toolEvents ?? []).slice();
+            for (let i = events.length - 1; i >= 0; i--) {
+              if (events[i].name === name && events[i].detail === "выполняется…") {
+                events[i] = { ...events[i], status, detail: status === "error" ? "ошибка" : "готово" };
+                break;
+              }
+            }
+            return { ...x, toolEvents: events };
+          }) ?? null,
+        );
+      },
+      onDone: ({ response, sources, toolEvents }) => {
+        ensureAssistantBubble(response);
+        setMessages((m) =>
+          m?.map((x) =>
+            x.id === assistantMsgId
+              ? {
+                  ...x,
+                  content: response || x.content,
+                  sources,
+                  toolEvents: toolEvents.length ? toolEvents : x.toolEvents,
+                }
+              : x,
+          ) ?? null,
+        );
+        setSending(false);
+        streamControllerRef.current = null;
+        loadConversations().catch(() => undefined);
+      },
+      onError: (errMsg) => {
+        setMessages((m) =>
+          m?.filter((x) => x.id !== assistantMsgId || (x.content?.trim().length ?? 0) > 0) ?? null,
+        );
+        toast.error(errMsg || "Ошибка отправки");
+        setSending(false);
+        streamControllerRef.current = null;
+      },
+    });
   };
 
   const ConvList = (

@@ -1,6 +1,7 @@
 """
 LangChain agent instance with switchable chat model.
 """
+import asyncio
 import json
 import logging
 import yaml
@@ -49,6 +50,51 @@ def _postgres_checkpoint_dsn(raw_url: str) -> str:
     return url
 
 
+def _attach_async_compat(saver) -> None:
+    """Make a sync checkpointer usable in async paths by delegating to threads.
+
+    LangGraph's `astream_events` (and other async APIs) call `aget_tuple` /
+    `aput` / `aput_writes` / `alist` / `adelete_thread` on the checkpointer.
+    `PostgresSaver` and `SqliteSaver` are sync-only; the base class raises
+    `NotImplementedError` for the async variants. We wrap the sync methods in
+    `asyncio.to_thread` so the same instance works in both sync `invoke` and
+    async `astream_events` paths without maintaining two checkpointers.
+    """
+    if saver is None or getattr(saver, "_async_compat_patched", False):
+        return
+
+    async def aget_tuple(config):
+        return await asyncio.to_thread(saver.get_tuple, config)
+
+    async def aput(config, checkpoint, metadata, new_versions):
+        return await asyncio.to_thread(saver.put, config, checkpoint, metadata, new_versions)
+
+    async def aput_writes(config, writes, task_id, task_path=""):
+        return await asyncio.to_thread(saver.put_writes, config, writes, task_id, task_path)
+
+    async def alist(config, *, filter=None, before=None, limit=None):
+        # Sync `list` returns an iterator; materialise on a worker thread,
+        # then re-yield asynchronously so callers get a real async iterator.
+        items = await asyncio.to_thread(
+            lambda: list(saver.list(config, filter=filter, before=before, limit=limit))
+        )
+        for item in items:
+            yield item
+
+    async def adelete_thread(thread_id):
+        delete_fn = getattr(saver, "delete_thread", None)
+        if not callable(delete_fn):
+            return None
+        return await asyncio.to_thread(delete_fn, thread_id)
+
+    saver.aget_tuple = aget_tuple
+    saver.aput = aput
+    saver.aput_writes = aput_writes
+    saver.alist = alist
+    saver.adelete_thread = adelete_thread
+    saver._async_compat_patched = True
+
+
 def _get_checkpointer():
     """Create a valid checkpoint saver instance for configured backend."""
     global _checkpointer_cm, _checkpointer
@@ -58,6 +104,7 @@ def _get_checkpointer():
     backend = (CHECKPOINT_BACKEND or "").strip().lower()
     if backend == "memory":
         _checkpointer = InMemorySaver()
+        _attach_async_compat(_checkpointer)
         return _checkpointer
 
     if backend == "postgres":
@@ -78,11 +125,13 @@ def _get_checkpointer():
         setup_fn = getattr(_checkpointer, "setup", None)
         if callable(setup_fn):
             setup_fn()
+        _attach_async_compat(_checkpointer)
         return _checkpointer
 
     # sqlite backend
     if not CHECKPOINT_DB:
         _checkpointer = InMemorySaver()
+        _attach_async_compat(_checkpointer)
         return _checkpointer
     try:
         from langgraph.checkpoint.sqlite import SqliteSaver
@@ -93,6 +142,7 @@ def _get_checkpointer():
         ) from None
     _checkpointer_cm = SqliteSaver.from_conn_string(CHECKPOINT_DB)
     _checkpointer = _checkpointer_cm.__enter__()
+    _attach_async_compat(_checkpointer)
     return _checkpointer
 
 
@@ -254,7 +304,7 @@ class ResponseFormat:
 def build_agent(
     extra_tools: list | None = None,
     model_name: str | None = None,
-    use_response_format: bool = True,
+    use_response_format: bool = False,
     monday_username: str | None = None,
     include_monday_tools: bool = False,
     include_retrieve_context: bool = True,
