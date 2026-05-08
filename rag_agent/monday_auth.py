@@ -21,6 +21,7 @@ from sqlalchemy import delete, func, select
 
 from rag_agent.config import (
     MONDAY_ENCRYPTION_KEY,
+    RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS,
     RAG_MONDAY_MCP_MAX_TOOLS,
     RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS,
     RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS,
@@ -797,6 +798,53 @@ def _cap_monday_tools(tools: list, max_tools: int) -> list:
     return kept
 
 
+def _optional_param_count(tool_obj) -> int:
+    schema = getattr(tool_obj, "args_schema", None)
+    fields = getattr(schema, "model_fields", None) if schema is not None else None
+    if not isinstance(fields, dict):
+        return 0
+    optional = 0
+    for field in fields.values():
+        try:
+            if hasattr(field, "is_required") and field.is_required():
+                continue
+            optional += 1
+        except Exception:
+            optional += 1
+    return optional
+
+
+def _cap_optional_params(tools: list, max_optional_params: int) -> list:
+    """Keep tool schemas under provider optional-parameter complexity budget."""
+    budget = max(1, int(max_optional_params or 1))
+    if not tools:
+        return []
+
+    kept: list = []
+    used = 0
+    # Tools are already priority-sorted/capped before this step.
+    for tool_obj in tools:
+        opt = _optional_param_count(tool_obj)
+        # Always allow a zero/low optional tool; for very first tool, keep at least one.
+        if kept and (used + opt) > budget:
+            continue
+        kept.append(tool_obj)
+        used += opt
+        if used >= budget:
+            break
+
+    if len(kept) < len(tools):
+        logger.warning(
+            "Capped monday tool optional params from total %d to %d (budget=%d), tools kept=%d/%d",
+            sum(_optional_param_count(t) for t in tools),
+            sum(_optional_param_count(t) for t in kept),
+            budget,
+            len(kept),
+            len(tools),
+        )
+    return kept
+
+
 def get_monday_mcp_tools_for_user(username: str) -> list:
     _configure_mcp_logging()
     token = _get_access_token_for_user(username)
@@ -830,6 +878,7 @@ def get_monday_mcp_tools_for_user(username: str) -> list:
     if RAG_MONDAY_MCP_TOOL_ALLOWLIST:
         tools = [t for t in tools if str(getattr(t, "name", "")).strip() in RAG_MONDAY_MCP_TOOL_ALLOWLIST]
     tools = _cap_monday_tools(tools, RAG_MONDAY_MCP_MAX_TOOLS)
+    tools = _cap_optional_params(tools, RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS)
     _tools_cache[key_digest] = (now, list(tools))
     return tools
 

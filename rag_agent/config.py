@@ -85,6 +85,12 @@ RAG_MONDAY_MCP_MAX_TOOLS = max(
     1,
     min(50, int(os.environ.get("RAG_MONDAY_MCP_MAX_TOOLS", "18"))),
 )
+# Anthropic can reject overly complex tool schemas with too many optional params.
+# Keep a conservative optional-parameter budget across selected monday tools.
+RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS = max(
+    1,
+    min(200, int(os.environ.get("RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS", "22"))),
+)
 RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS = max(
     30,
     int(os.environ.get("RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS", "600")),
