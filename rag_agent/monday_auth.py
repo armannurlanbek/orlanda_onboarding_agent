@@ -798,20 +798,53 @@ def _cap_monday_tools(tools: list, max_tools: int) -> list:
     return kept
 
 
-def _optional_param_count(tool_obj) -> int:
-    schema = getattr(tool_obj, "args_schema", None)
-    fields = getattr(schema, "model_fields", None) if schema is not None else None
-    if not isinstance(fields, dict):
+def _count_optional_props_in_schema(schema_obj: Any) -> int:
+    """Count optional object properties recursively in JSON schema dict."""
+    if not isinstance(schema_obj, dict):
         return 0
-    optional = 0
-    for field in fields.values():
-        try:
-            if hasattr(field, "is_required") and field.is_required():
-                continue
-            optional += 1
-        except Exception:
-            optional += 1
-    return optional
+
+    total = 0
+    schema_type = str(schema_obj.get("type") or "").strip().lower()
+    if schema_type == "object" and isinstance(schema_obj.get("properties"), dict):
+        props = schema_obj["properties"]
+        required = schema_obj.get("required", [])
+        req_set = {str(x) for x in required} if isinstance(required, list) else set()
+        for prop_name, prop_schema in props.items():
+            if str(prop_name) not in req_set:
+                total += 1
+            total += _count_optional_props_in_schema(prop_schema)
+
+    for key in ("items", "additionalProperties", "not"):
+        child = schema_obj.get(key)
+        if isinstance(child, dict):
+            total += _count_optional_props_in_schema(child)
+
+    for key in ("allOf", "anyOf", "oneOf", "prefixItems"):
+        children = schema_obj.get(key)
+        if isinstance(children, list):
+            for child in children:
+                total += _count_optional_props_in_schema(child)
+
+    defs = schema_obj.get("$defs")
+    if isinstance(defs, dict):
+        for child in defs.values():
+            total += _count_optional_props_in_schema(child)
+
+    return total
+
+
+def _optional_param_count(tool_obj) -> int:
+    schema_cls = getattr(tool_obj, "args_schema", None)
+    if schema_cls is None:
+        return 0
+    try:
+        model_json_schema = getattr(schema_cls, "model_json_schema", None)
+        if callable(model_json_schema):
+            schema_dict = model_json_schema()
+            return _count_optional_props_in_schema(schema_dict)
+    except Exception:
+        return 0
+    return 0
 
 
 def _cap_optional_params(tools: list, max_optional_params: int) -> list:
