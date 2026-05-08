@@ -21,3 +21,4 @@ pgvector>=0.2
 langgraph-checkpoint-postgres
 slowapi>=0.1.9
 python-multipart
+langchain-mcp-adapters
