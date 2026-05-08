@@ -402,8 +402,14 @@ def _run_async_sync(coro):
 
 
 def _sanitize_tools_for_anthropic(tools: list) -> list:
-    """Strip minimum/maximum from number/integer fields — Anthropic's API rejects these."""
+    """Strip minimum/maximum from number/integer fields — Anthropic's API rejects these.
+
+    Uses subclassing instead of monkey-patching so Pydantic v2's ModelMetaclass
+    processes the override correctly rather than silently ignoring it.
+    """
     import copy
+    from langchain_core.tools import StructuredTool as _ST
+
     _STRIP = frozenset({"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"})
 
     def _clean(obj):
@@ -418,24 +424,34 @@ def _sanitize_tools_for_anthropic(tools: list) -> list:
                 _clean(item)
         return obj
 
+    def _make_cleaned_schema(base_cls):
+        class CleanedSchema(base_cls):
+            @classmethod
+            def model_json_schema(cls, **kwargs):
+                return _clean(copy.deepcopy(super().model_json_schema(**kwargs)))
+        return CleanedSchema
+
+    result = []
     for tool in tools:
         schema_cls = getattr(tool, "args_schema", None)
-        if schema_cls is None:
+        func = getattr(tool, "func", None)
+        coroutine = getattr(tool, "coroutine", None)
+        if schema_cls is None or (func is None and coroutine is None):
+            result.append(tool)
             continue
         try:
-            clean_schema = _clean(schema_cls.model_json_schema())
+            new_tool = _ST.from_function(
+                name=tool.name,
+                description=tool.description or "",
+                args_schema=_make_cleaned_schema(schema_cls),
+                func=func,
+                coroutine=coroutine,
+            )
+            result.append(new_tool)
         except Exception:
-            continue
+            result.append(tool)
 
-        def _override_fn(cls, _cached=copy.deepcopy(clean_schema), **kw):
-            return copy.deepcopy(_cached)
-
-        try:
-            type.__setattr__(schema_cls, "model_json_schema", classmethod(_override_fn))
-        except Exception:
-            pass
-
-    return tools
+    return result
 
 
 def _ensure_sync_callable_tools(tools: list) -> list:
