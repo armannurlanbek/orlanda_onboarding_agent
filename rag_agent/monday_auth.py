@@ -42,20 +42,25 @@ logger = logging.getLogger(__name__)
 
 
 def _patch_anthropic_tool_converter() -> None:
-    """Patch langchain-anthropic's tool converter to strip number constraints.
+    """Patch langchain-anthropic's tool converter to strip unsupported constraints.
 
-    Anthropic's API rejects `minimum`/`maximum`/etc. on number/integer schemas.
+    Anthropic's API rejects some JSON Schema constraints (e.g. number and array
+    bound constraints) in tool definitions.
     `convert_to_anthropic_tool` builds the exact dict sent over the wire — cleaning
     its output is the most direct fix and bypasses Pydantic schema caching issues.
     """
     import copy as _copy
 
-    _STRIP_KEYS = ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf")
+    _STRIP_KEYS_BY_TYPE = {
+        "number": ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"),
+        "integer": ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"),
+        "array": ("minItems", "maxItems", "uniqueItems"),
+    }
 
     def _strip(obj):
         if isinstance(obj, dict):
-            if obj.get("type") in ("number", "integer"):
-                for k in _STRIP_KEYS:
+            obj_type = str(obj.get("type") or "").strip().lower()
+            for k in _STRIP_KEYS_BY_TYPE.get(obj_type, ()):
                     obj.pop(k, None)
             for v in list(obj.values()):
                 _strip(v)
@@ -128,7 +133,7 @@ def _patch_anthropic_tool_converter() -> None:
         pass
 
     if patched_any:
-        logger.info("Patched langchain tool converters to strip Anthropic-incompatible number constraints")
+        logger.info("Patched langchain tool converters to strip Anthropic-incompatible schema constraints")
     else:
         logger.warning("Could not locate langchain tool converter to patch — Anthropic tool calls may 400")
 
