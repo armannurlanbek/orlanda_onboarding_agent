@@ -68,9 +68,38 @@ def _patch_anthropic_tool_converter() -> None:
 
     def _strip(obj):
         if isinstance(obj, dict):
+            # $ref with $defs removed below would be unresolvable — replace immediately.
+            if "$ref" in obj:
+                obj.clear()
+                obj["type"] = "string"
+                return obj
+
             obj_type = str(obj.get("type") or "").strip().lower()
             for k in _STRIP_KEYS_BY_TYPE.get(obj_type, ()):
                 obj.pop(k, None)
+
+            # $defs / definitions balloon the compiled grammar exponentially.
+            obj.pop("$defs", None)
+            obj.pop("definitions", None)
+            obj.pop("examples", None)
+
+            # anyOf / oneOf create union branches in the grammar — pick first concrete type.
+            for union_key in ("anyOf", "oneOf"):
+                variants = obj.pop(union_key, None)
+                if not isinstance(variants, list) or obj.get("type"):
+                    continue
+                concrete = [
+                    v for v in variants
+                    if isinstance(v, dict)
+                    and v.get("type") not in (None, "null")
+                    and "$ref" not in v
+                ]
+                if concrete:
+                    for k, v in concrete[0].items():
+                        obj.setdefault(k, v)
+                else:
+                    obj["type"] = "string"
+
             for v in list(obj.values()):
                 _strip(v)
         elif isinstance(obj, list):

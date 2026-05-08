@@ -79,17 +79,17 @@ RAG_MONDAY_MCP_TIMEOUT_SECONDS = int(os.environ.get("RAG_MONDAY_MCP_TIMEOUT_SECO
 RAG_MONDAY_MCP_TOOL_ALLOWLIST = {
     name.strip() for name in os.environ.get("RAG_MONDAY_MCP_TOOL_ALLOWLIST", "").split(",") if name.strip()
 }
-# Anthropic supports at most 20 strict tools in one request.
-# Keep Monday toolset below that ceiling (retrieve_context may also be present).
+# Anthropic's grammar compiler rejects tool sets that are too complex.
+# Monday MCP tools have nested $defs / anyOf schemas that expand the grammar quickly.
+# Keep the count low; override via RAG_MONDAY_MCP_MAX_TOOLS env var if needed.
 RAG_MONDAY_MCP_MAX_TOOLS = max(
     1,
-    min(50, int(os.environ.get("RAG_MONDAY_MCP_MAX_TOOLS", "18"))),
+    min(50, int(os.environ.get("RAG_MONDAY_MCP_MAX_TOOLS", "5"))),
 )
-# Anthropic can reject overly complex tool schemas with too many optional params.
-# Keep a conservative optional-parameter budget across selected monday tools.
+# Optional-parameter budget across selected monday tools.
 RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS = max(
     1,
-    min(200, int(os.environ.get("RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS", "22"))),
+    min(200, int(os.environ.get("RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS", "10"))),
 )
 RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS = max(
     30,
