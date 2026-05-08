@@ -39,6 +39,81 @@ from rag_agent.db.models import MondayConnectionState, MondayUserConnection, Use
 from rag_agent.db.session import get_engine, get_session_factory
 
 logger = logging.getLogger(__name__)
+
+
+def _patch_langchain_subset_model_for_anthropic() -> None:
+    """Patch langchain_core's `_create_subset_model` to strip number constraints.
+
+    Anthropic's API rejects `minimum`/`maximum`/etc. on number/integer JSON schemas.
+    `_create_subset_model` is what builds the schema sent to the LLM — patching it
+    here means every tool (Monday MCP or otherwise) gets a constraint-free schema.
+    Idempotent: skips if already patched.
+    """
+    try:
+        from langchain_core.tools import base as _tb
+    except Exception:
+        return
+
+    original = getattr(_tb, "_create_subset_model", None)
+    if original is None or getattr(original, "_anthropic_patched", False):
+        return
+
+    import copy as _copy
+    import typing as _typing
+    from pydantic import create_model as _create_model
+
+    _STRIP = frozenset({"Ge", "Le", "Gt", "Lt", "MultipleOf", "Interval", "_PydanticGeneralMetadata"})
+
+    def _is_constraint(meta_obj) -> bool:
+        return type(meta_obj).__name__ in _STRIP
+
+    def _strip_annotation(ann):
+        meta = getattr(ann, "__metadata__", None)
+        if not meta:
+            return ann
+        base = getattr(ann, "__origin__", None)
+        if base is None:
+            return ann
+        kept = tuple(m for m in meta if not _is_constraint(m))
+        if not kept:
+            return base
+        return _typing.Annotated[(base, *kept)]
+
+    def _strip_field(field):
+        new_field = _copy.copy(field)
+        try:
+            md = list(getattr(new_field, "metadata", None) or [])
+            new_field.metadata = [m for m in md if not _is_constraint(m)]
+        except Exception:
+            pass
+        for attr in ("ge", "le", "gt", "lt", "multiple_of"):
+            try:
+                if getattr(new_field, attr, None) is not None:
+                    setattr(new_field, attr, None)
+            except Exception:
+                pass
+        return new_field
+
+    def _patched(name, model, field_names):
+        try:
+            fields = {}
+            for fn in field_names:
+                field = model.model_fields[fn]
+                cleaned_field = _strip_field(field)
+                cleaned_ann = _strip_annotation(field.annotation)
+                fields[fn] = (cleaned_ann, cleaned_field)
+            return _create_model(name, **fields)
+        except Exception:
+            return original(name, model, field_names)
+
+    _patched._anthropic_patched = True  # type: ignore[attr-defined]
+    _tb._create_subset_model = _patched
+    logger.info("Patched langchain_core._create_subset_model to strip number constraints")
+
+
+_patch_langchain_subset_model_for_anthropic()
+
+
 _monday_call_stats_ctx: contextvars.ContextVar[dict[str, int] | None] = contextvars.ContextVar(
     "monday_call_stats_ctx",
     default=None,
@@ -402,53 +477,119 @@ def _run_async_sync(coro):
 
 
 def _sanitize_tools_for_anthropic(tools: list) -> list:
-    """Strip minimum/maximum from number/integer fields — Anthropic's API rejects these.
+    """Strip number-range constraints (Ge/Le/Gt/Lt/MultipleOf) from MCP tool args_schema.
 
-    Uses subclassing instead of monkey-patching so Pydantic v2's ModelMetaclass
-    processes the override correctly rather than silently ignoring it.
+    Anthropic's API rejects `minimum`/`maximum` on number/integer JSON schema types.
+    LangChain's `tool_call_schema` builds a fresh Pydantic model via `_create_subset_model`,
+    so overriding `model_json_schema` via subclassing doesn't survive — we must strip
+    the constraints at the FieldInfo metadata level (and from `Annotated[...]` annotations)
+    so the regenerated schema contains no minimum/maximum to begin with.
     """
     import copy
+    import typing
+    from pydantic import create_model
     from langchain_core.tools import StructuredTool as _ST
 
-    _STRIP = frozenset({"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"})
+    _STRIP_CONSTRAINTS = frozenset({
+        "Ge", "Le", "Gt", "Lt", "MultipleOf", "Interval",
+        "_PydanticGeneralMetadata",
+    })
+    _STRIP_JSON_KEYS = frozenset({
+        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+    })
 
-    def _clean(obj):
-        if isinstance(obj, dict):
-            if obj.get("type") in ("number", "integer"):
-                for k in _STRIP:
-                    obj.pop(k, None)
-            for v in list(obj.values()):
-                _clean(v)
-        elif isinstance(obj, list):
-            for item in obj:
-                _clean(item)
-        return obj
+    def _is_constraint(meta_obj) -> bool:
+        return type(meta_obj).__name__ in _STRIP_CONSTRAINTS
 
-    def _make_cleaned_schema(base_cls):
-        class CleanedSchema(base_cls):
-            @classmethod
-            def model_json_schema(cls, **kwargs):
-                return _clean(copy.deepcopy(super().model_json_schema(**kwargs)))
-        return CleanedSchema
+    def _strip_annotation(ann):
+        """If `ann` is Annotated[T, Ge(0), Le(10)], return Annotated[T, ...] with constraints removed."""
+        meta = getattr(ann, "__metadata__", None)
+        if not meta:
+            return ann
+        base = getattr(ann, "__origin__", None)
+        if base is None:
+            return ann
+        kept = tuple(m for m in meta if not _is_constraint(m))
+        if not kept:
+            return base
+        return typing.Annotated[(base, *kept)]
+
+    def _strip_field(field_info):
+        new_field = copy.copy(field_info)
+        meta = list(getattr(new_field, "metadata", []) or [])
+        new_meta = [m for m in meta if not _is_constraint(m)]
+        try:
+            new_field.metadata = new_meta
+        except Exception:
+            pass
+        # Some Pydantic versions also store constraints directly on FieldInfo attrs.
+        for attr in ("ge", "le", "gt", "lt", "multiple_of"):
+            try:
+                if getattr(new_field, attr, None) is not None:
+                    setattr(new_field, attr, None)
+            except Exception:
+                pass
+        return new_field
+
+    def _build_clean_schema(schema_cls):
+        new_fields = {}
+        for fname, finfo in schema_cls.model_fields.items():
+            new_ann = _strip_annotation(finfo.annotation)
+            new_fields[fname] = (new_ann, _strip_field(finfo))
+        cleaned = create_model(f"Clean_{schema_cls.__name__}", **new_fields)
+
+        # Belt-and-suspenders: also override model_json_schema to strip leftover
+        # numeric constraints from the generated dict.
+        def _clean_dict(obj):
+            if isinstance(obj, dict):
+                if obj.get("type") in ("number", "integer"):
+                    for k in _STRIP_JSON_KEYS:
+                        obj.pop(k, None)
+                for v in list(obj.values()):
+                    _clean_dict(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _clean_dict(item)
+            return obj
+
+        original_mjs = cleaned.model_json_schema
+
+        def _patched_mjs(*args, **kw):
+            return _clean_dict(copy.deepcopy(original_mjs(*args, **kw)))
+
+        try:
+            cleaned.model_json_schema = _patched_mjs  # type: ignore[assignment]
+        except Exception:
+            pass
+        return cleaned
 
     result = []
     for tool in tools:
         schema_cls = getattr(tool, "args_schema", None)
         func = getattr(tool, "func", None)
         coroutine = getattr(tool, "coroutine", None)
-        if schema_cls is None or (func is None and coroutine is None):
+        if schema_cls is None or not hasattr(schema_cls, "model_fields"):
+            result.append(tool)
+            continue
+        if func is None and coroutine is None:
             result.append(tool)
             continue
         try:
+            cleaned_cls = _build_clean_schema(schema_cls)
             new_tool = _ST.from_function(
                 name=tool.name,
                 description=tool.description or "",
-                args_schema=_make_cleaned_schema(schema_cls),
+                args_schema=cleaned_cls,
                 func=func,
                 coroutine=coroutine,
             )
             result.append(new_tool)
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "Failed to sanitize monday tool %s for anthropic: %s",
+                getattr(tool, "name", "?"),
+                e,
+            )
             result.append(tool)
 
     return result
