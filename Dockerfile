@@ -2,7 +2,7 @@
 FROM node:20-slim AS frontend-builder
 WORKDIR /app/rag_agent/frontend
 COPY rag_agent/frontend/package*.json ./
-RUN npm ci --prefer-offline
+RUN npm install --prefer-offline
 COPY rag_agent/frontend/ ./
 RUN npm run build
 
