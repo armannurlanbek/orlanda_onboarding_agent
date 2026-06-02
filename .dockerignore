@@ -18,3 +18,9 @@ n8n_orlanda.md
 copy/
 debug-*.log
 .claude/
+.cursor/
+server-info/
+SESSION_*.md
+terminal_output.md
+error.md
+data/

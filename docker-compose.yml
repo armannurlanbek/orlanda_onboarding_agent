@@ -1,48 +1,43 @@
+# Orlanda failover-cluster deployment for the "platform" app.
+#
+# This compose file is written for the two-server pg_auto_failover cluster
+# described in server-info/ (Docs 1-4). It deliberately does NOT run its own
+# PostgreSQL: the shared cluster Postgres + the db-router (HAProxy :6432) already
+# live on the host. The app connects to the router at 127.0.0.1:6432, which always
+# forwards to whichever server is the current primary.
+#
+# Key rules baked in (see server-info/04-DEPLOY-NEW-APP-PLAYBOOK.md):
+#   - network_mode: host           -> avoids the Docker NAT-loopback problem (Doc 3 §8-G)
+#   - DB host is 127.0.0.1:6432     -> the router, never 5432 or a server IP
+#   - URL assembled from ${DB_PASSWORD} in `environment:` (env_file values are NOT interpolated)
+#   - the app listens on :8001      -> roman already owns :8000 (Doc 2 §2)
+#
+# Deploy this identically on BOTH servers, into /opt/platform-agent/. Run it on the
+# current primary; on the standby `docker compose build` only and leave it stopped —
+# the orlanda-role-agent starts/stops it on failover.
 services:
-  platform-postgres:
-    image: pgvector/pgvector:pg16
-    container_name: platform-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-platform}
-      POSTGRES_USER: ${POSTGRES_USER:-platform}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - platform-postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-platform} -d ${POSTGRES_DB:-platform}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - platform-network
-
   platform:
     build: .
     image: orlanda-platform:latest
     container_name: platform
     restart: unless-stopped
     env_file: .env
+    network_mode: host
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD}@platform-postgres:5432/${POSTGRES_DB:-platform}
-      PORT: "8000"
+      # Always reach the current primary through the db-router (HAProxy :6432).
+      # SQLAlchemy/Alembic use this DSN; the langgraph checkpointer strips "+psycopg".
+      DATABASE_URL: postgresql+psycopg://platform:${DB_PASSWORD}@127.0.0.1:6432/db_platform
+      # Conversation history / checkpoints live in Postgres so they replicate.
       CHECKPOINT_BACKEND: postgres
-    depends_on:
-      platform-postgres:
-        condition: service_healthy
+      # roman uses 8000; platform uses 8001. cloudflared ingress dials localhost:8001.
+      PORT: "8001"
+      # Bind to loopback only — cloudflared connects via localhost; nothing else should.
+      RAG_AGENT_API_HOST: "127.0.0.1"
     volumes:
-      - platform-knowledge:/app/knowledge_base
-      - platform-data:/app/rag_agent/data
-    ports:
-      - "127.0.0.1:8001:8000"
-    networks:
-      - platform-network
-
-volumes:
-  platform-postgres-data:
-  platform-knowledge:
-  platform-data:
-
-networks:
-  platform-network:
-    driver: bridge
+      # WARNING: disk files do NOT replicate across the cluster (Doc 1 §5). Both of
+      # these must be kept in sync between Hetzner and OVH (rsync) after every change,
+      # or the app loses uploaded PDFs / conversation titles after a failover.
+      #   - knowledge_base/ : raw uploaded PDFs (embeddings themselves are in Postgres)
+      #   - data/           : chat_conversations.json (per-user conversation titles)
+      - ./knowledge_base:/app/knowledge_base
+      - ./data:/app/rag_agent/data

@@ -356,6 +356,16 @@ def index():
     return _serve_frontend_or_legacy(STATIC_DIR / "index.html")
 
 
+@app.get("/healthz")
+def healthz():
+    """Liveness check for the Cloudflare load balancer — intentionally DB-free.
+
+    The LB health monitor points here (not at /health) so a transient DB blip on
+    the primary cannot flap the pool. See server-info Doc 2 §11 / Doc 4 §9.
+    """
+    return {"status": "ok"}
+
+
 @app.get("/health")
 def health():
     """Production health check — verifies database connectivity."""
