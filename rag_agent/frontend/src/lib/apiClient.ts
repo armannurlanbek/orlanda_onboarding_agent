@@ -255,12 +255,25 @@ export const api = {
         `/chat/history?conversation_id=${encodeURIComponent(conversationId)}`,
         { token },
       );
-      return (data.messages || []).map((m, index) => ({
-        id: `h-${conversationId}-${index}-${Date.now()}`,
-        role: normalizeRole(m.role),
-        content: String(m.content || ""),
-        createdAt: new Date().toISOString(),
-      }));
+      // The backend may persist the same assistant answer more than once (e.g. a
+      // best-effort "ensure assistant turn" guard appends a duplicate when the final
+      // text is not the literal last message). Collapse adjacent identical turns so a
+      // refresh renders each message exactly once. IDs are stable (no Date.now) so
+      // React keys stay consistent across refetches.
+      const result: Message[] = [];
+      (data.messages || []).forEach((m, index) => {
+        const role = normalizeRole(m.role);
+        const content = String(m.content || "");
+        const prev = result[result.length - 1];
+        if (prev && prev.role === role && prev.content === content) return;
+        result.push({
+          id: `h-${conversationId}-${index}`,
+          role,
+          content,
+          createdAt: new Date().toISOString(),
+        });
+      });
+      return result;
     },
     async sendMessage(
       token: string,
