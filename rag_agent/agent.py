@@ -34,10 +34,17 @@ _RUNTIME_SETTINGS_PATH = RAG_AGENT_DIR / "data" / "runtime_settings.json"
 
 
 def _load_system_prompt() -> str:
-    """Load system prompt from YAML file."""
+    """Load base system prompt from YAML file (no Monday-tool claims)."""
     with open(_SYSTEM_PROMPT_PATH, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return data["system_prompt"].strip()
+
+
+def _load_monday_tools_prompt() -> str:
+    """Load the Monday-tools guidance block appended only when Monday tools are bound."""
+    with open(_SYSTEM_PROMPT_PATH, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    return str(data.get("monday_tools_prompt") or "").strip()
 
 
 _checkpointer_cm = None
@@ -323,6 +330,7 @@ def _bootstrap_active_model() -> None:
         return
 
 system_prompt = _load_system_prompt()
+monday_tools_prompt = _load_monday_tools_prompt()
 _bootstrap_active_model()
 
 
@@ -347,17 +355,26 @@ def build_agent(
     include_retrieve_context: bool = True,
 ):
     tools = [retrieve_context] if include_retrieve_context else []
+    monday_tools_bound = False
     if include_monday_tools and RAG_ENABLE_MONDAY_MCP and monday_username:
         try:
-            tools.extend(get_monday_mcp_tools_for_user(monday_username))
+            monday_tools = get_monday_mcp_tools_for_user(monday_username)
+            if monday_tools:
+                tools.extend(monday_tools)
+                monday_tools_bound = True
         except Exception:
             logger.exception("Failed to load per-user monday MCP tools")
     if extra_tools:
         tools.extend(extra_tools)
+    # Prompt/tool agreement invariant: describe Monday tools IF AND ONLY IF Monday
+    # tools are actually bound for this request.
+    effective_system_prompt = system_prompt
+    if monday_tools_bound and monday_tools_prompt:
+        effective_system_prompt = f"{system_prompt}\n\n{monday_tools_prompt}"
     kwargs = {
         "model": _build_chat_model(model_name=model_name),
         "tools": tools,
-        "system_prompt": system_prompt,
+        "system_prompt": effective_system_prompt,
         "checkpointer": _get_checkpointer(),
         "context_schema": Context,
     }
@@ -368,4 +385,18 @@ def build_agent(
     )
 
 
-agent = build_agent()
+_base_agent = None
+
+
+def get_base_agent():
+    """Lazily build and cache the default agent.
+
+    Building the agent opens the Postgres checkpoint pool (and runs DDL) via
+    `_get_checkpointer()`. Deferring this from import time to first use means an
+    unreachable DB/router surfaces as a clean runtime error (or a 503 from the
+    endpoint) instead of crashing the whole process at import.
+    """
+    global _base_agent
+    if _base_agent is None:
+        _base_agent = build_agent()
+    return _base_agent

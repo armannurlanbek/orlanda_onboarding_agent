@@ -2,7 +2,7 @@
 Chat with the RAG agent. Index is loaded from disk (no re-indexing each run).
 Shows which documents were used for each answer.
 """
-from rag_agent.agent import agent, Context
+from rag_agent.agent import get_base_agent, Context
 from rag_agent.rag_tool import get_last_sources
 
 CONFIG = {"configurable": {"thread_id": "chat_1"}}
@@ -38,7 +38,7 @@ def main():
 
         messages.append({"role": "user", "content": user_input})
 
-        response = agent.invoke(
+        response = get_base_agent().invoke(
             {"messages": messages},
             config=CONFIG,
             context=Context(user_id="1"),

@@ -109,7 +109,10 @@ RAG_MAX_AGENT_RECURSION_LIMIT = max(
 RAG_MONDAY_MCP_OAUTH_ENABLED = os.environ.get("RAG_MONDAY_MCP_OAUTH_ENABLED", "true").strip().lower() in {
     "1", "true", "yes", "on"
 }
-RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY = os.environ.get("RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY", "true").strip().lower() in {
+# When false (default): a CONNECTED monday user always has monday tools bound,
+# regardless of keyword intent — so phrasing never hides the tools. Set to true
+# as an opt-in to gate tools behind the keyword intent classifier instead.
+RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY = os.environ.get("RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY", "false").strip().lower() in {
     "1", "true", "yes", "on"
 }
 # monday OAuth settings (hosted MCP user auth).

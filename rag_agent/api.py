@@ -24,11 +24,11 @@ from slowapi.util import get_remote_address
 
 from rag_agent.agent import (
     Context,
-    agent,
     build_agent,
     close_checkpointer,
     delete_conversation_state,
     get_active_model_name,
+    get_base_agent,
     set_active_model,
 )
 from rag_agent.auth import (
@@ -288,6 +288,13 @@ async def lifespan(app: FastAPI):
     require_runtime_keys()
     warn_oauth_redirect_misconfig()
     logger.info("Active chat model: %s", get_active_model_name())
+    # Warm the checkpointer/base agent once at startup. Doing this inside a try
+    # means a DB/router problem is logged and surfaced cleanly here instead of
+    # crashing at import time; endpoints can still return a clean 5xx afterwards.
+    try:
+        get_base_agent()
+    except Exception:
+        logger.exception("Failed to warm base agent/checkpointer on startup")
     try:
         yield
     finally:
@@ -640,7 +647,8 @@ def admin_history_threads(
     Read-only diagnostics endpoint for admins.
     """
     _require_admin(authorization)
-    cp = getattr(agent, "checkpointer", None)
+    base_agent = get_base_agent()
+    cp = getattr(base_agent, "checkpointer", None)
     list_fn = getattr(cp, "list", None) if cp is not None else None
     if not callable(list_fn):
         return {
@@ -680,7 +688,7 @@ def admin_history_threads(
         semantic_count = 0
         load_error = ""
         try:
-            state = agent.get_state(cfg)
+            state = base_agent.get_state(cfg)
             values = getattr(state, "values", None) or {}
             messages = values.get("messages", []) or []
             semantic_count = _semantic_message_count(messages)
@@ -1120,15 +1128,21 @@ def _ensure_assistant_turn_persisted(runtime_agent, config: dict, content: str) 
             state = get_state(config)
             values = getattr(state, "values", None) or {}
             messages = values.get("messages", []) or []
-            if messages:
-                last = messages[-1]
-                if isinstance(last, dict):
-                    last_role = str(last.get("role") or last.get("type") or "").lower()
-                    last_content = str(last.get("content") or "")
+            # The persisted assistant turn's content is raw structured JSON
+            # (`{"response_content": "..."}`), while `text` is plain. Normalize BOTH
+            # sides through the same unwrapper before comparing, and scan EVERY
+            # assistant/ai message (a tool-call AIMessage can sit after the text turn)
+            # — otherwise the guard never matches and a duplicate turn is appended.
+            for msg in messages:
+                if isinstance(msg, dict):
+                    role = str(msg.get("role") or msg.get("type") or "").lower()
+                    raw_content = msg.get("content") or ""
                 else:
-                    last_role = str(getattr(last, "role", None) or getattr(last, "type", None) or "").lower()
-                    last_content = str(getattr(last, "content", "") or "")
-                if last_role in {"assistant", "ai"} and last_content.strip() == text:
+                    role = str(getattr(msg, "role", None) or getattr(msg, "type", None) or "").lower()
+                    raw_content = getattr(msg, "content", "") or ""
+                if role not in {"assistant", "ai"}:
+                    continue
+                if _unwrap_response_content(raw_content) == text:
                     return
         # Most common langgraph signature.
         try:
@@ -1312,6 +1326,31 @@ def admin_user_provision(
     return {"ok": True, "user": result}
 
 
+def _unwrap_response_content(content) -> str:
+    """Strip the structured `{"response_content": "..."}` wrapper down to plain text.
+
+    The agent persists assistant content as a JSON string `{"response_content": ...}`.
+    This is the same normalization `_messages_to_history` applies on read, factored
+    out so callers (e.g. the persistence guard) can compare persisted turns as plain
+    text. Non-wrapped content is returned as a stripped string unchanged.
+    """
+    if isinstance(content, list):
+        # Multi-block content: join text parts the same way history rendering does.
+        content = " ".join(
+            (c.get("text", "") if isinstance(c, dict) else str(c)) for c in content
+        )
+    text = str(content or "")
+    stripped = text.strip()
+    if stripped.startswith("{") and "response_content" in stripped:
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, dict) and "response_content" in parsed:
+                return str(parsed["response_content"] or "").strip()
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return stripped
+
+
 def _messages_to_history(messages) -> list[dict]:
     """Convert agent state messages to [{role, content}, ...] for frontend (user/assistant only)."""
     def _extract_response_content_fallback(payload) -> str:
@@ -1391,13 +1430,8 @@ def _messages_to_history(messages) -> list[dict]:
             )
         content = str(content)
         # Agent may store assistant reply as JSON with response_content; extract plain text for history
-        if role == "assistant" and content.strip().startswith("{"):
-            try:
-                parsed = json.loads(content)
-                if isinstance(parsed, dict) and "response_content" in parsed:
-                    content = str(parsed["response_content"] or "")
-            except (json.JSONDecodeError, TypeError):
-                pass
+        if role == "assistant":
+            content = _unwrap_response_content(content)
         if role == "assistant" and not str(content).strip():
             # Skip empty assistant placeholders/tool-call stubs in history UI.
             continue
@@ -1415,7 +1449,7 @@ def chat_history(
     try:
         thread_id = _make_thread_id(username, conversation_id)
         config = {"configurable": {"thread_id": thread_id}}
-        get_state = getattr(agent, "get_state", None)
+        get_state = getattr(get_base_agent(), "get_state", None)
         if not get_state:
             return {"messages": []}
         state = get_state(config)
@@ -1435,7 +1469,7 @@ def chat_conversations(
 ):
     """Return conversation list for current user, discovered from persisted checkpoints."""
     username = _get_username(authorization)
-    cp = getattr(agent, "checkpointer", None)
+    cp = getattr(get_base_agent(), "checkpointer", None)
     list_fn = getattr(cp, "list", None) if cp is not None else None
     if not callable(list_fn):
         return {
@@ -1573,14 +1607,13 @@ def chat(
         monday_intent = bool(RAG_ENABLE_MONDAY_MCP and detect_monday_intent(user_message))
         monday_write_intent = bool(monday_intent and detect_monday_write_intent(user_message))
         monday_status_snapshot = get_monday_status(username) if RAG_ENABLE_MONDAY_MCP else None
+        monday_connected = bool(monday_status_snapshot and monday_status_snapshot.connected)
+        # Connected ⇒ tools attached. Only fall back to keyword-intent gating when
+        # RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY is opted in.
         include_monday_tools = bool(
             RAG_ENABLE_MONDAY_MCP
-            and monday_status_snapshot
-            and monday_status_snapshot.connected
-            and (
-                not RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY
-                or monday_intent
-            )
+            and monday_connected
+            and (not RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY or monday_intent)
         )
         if monday_intent:
             on_tool_event(
@@ -1867,10 +1900,12 @@ async def chat_stream(
     monday_intent = bool(RAG_ENABLE_MONDAY_MCP and detect_monday_intent(user_message))
     monday_write_intent = bool(monday_intent and detect_monday_write_intent(user_message))
     monday_status_snapshot = get_monday_status(username) if RAG_ENABLE_MONDAY_MCP else None
+    monday_connected = bool(monday_status_snapshot and monday_status_snapshot.connected)
+    # Connected ⇒ tools attached. Only fall back to keyword-intent gating when
+    # RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY is opted in.
     include_monday_tools = bool(
         RAG_ENABLE_MONDAY_MCP
-        and monday_status_snapshot
-        and monday_status_snapshot.connected
+        and monday_connected
         and (not RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY or monday_intent)
     )
 
@@ -2092,7 +2127,7 @@ def admin_delete_all_conversations(
 ):
     """Delete all persisted chat conversation threads globally. Admin only."""
     admin_username = _require_admin(authorization)
-    cp = getattr(agent, "checkpointer", None)
+    cp = getattr(get_base_agent(), "checkpointer", None)
     list_fn = getattr(cp, "list", None) if cp is not None else None
     if not callable(list_fn):
         return {
