@@ -1123,28 +1123,37 @@ def _ensure_assistant_turn_persisted(runtime_agent, config: dict, content: str) 
     if not callable(update_state):
         return
 
+    def _role_of(m) -> str:
+        if isinstance(m, dict):
+            return str(m.get("role") or m.get("type") or "").lower()
+        return str(getattr(m, "role", None) or getattr(m, "type", None) or "").lower()
+
+    def _content_of(m):
+        if isinstance(m, dict):
+            return m.get("content") or ""
+        return getattr(m, "content", "") or ""
+
     try:
         if callable(get_state):
             state = get_state(config)
             values = getattr(state, "values", None) or {}
             messages = values.get("messages", []) or []
-            # The persisted assistant turn's content is raw structured JSON
-            # (`{"response_content": "..."}`), while `text` is plain. Normalize BOTH
-            # sides through the same unwrapper before comparing, and scan EVERY
-            # assistant/ai message (a tool-call AIMessage can sit after the text turn)
-            # — otherwise the guard never matches and a duplicate turn is appended.
-            for msg in messages:
-                if isinstance(msg, dict):
-                    role = str(msg.get("role") or msg.get("type") or "").lower()
-                    raw_content = msg.get("content") or ""
-                else:
-                    role = str(getattr(msg, "role", None) or getattr(msg, "type", None) or "").lower()
-                    raw_content = getattr(msg, "content", "") or ""
-                if role not in {"assistant", "ai"}:
-                    continue
-                if _unwrap_response_content(raw_content) == text:
+            # The agent already persists its own assistant message(s) for the turn.
+            # `text` here is the streamed `final_content`, i.e. the CONCATENATION of
+            # every text delta across a multi-step run (intermediate "let me check…"
+            # narration + the final answer), so it equals no single persisted turn —
+            # appending it adds a giant message that repeats the whole turn on refresh.
+            # Only append when the agent persisted NO assistant text since the last
+            # user turn (the genuine "nothing got saved" safety net this guard exists
+            # for); otherwise the answer is already in history, so do nothing.
+            last_user_idx = -1
+            for i, msg in enumerate(messages):
+                if _role_of(msg) in {"user", "human"}:
+                    last_user_idx = i
+            for msg in messages[last_user_idx + 1:]:
+                if _role_of(msg) in {"assistant", "ai"} and _unwrap_response_content(_content_of(msg)).strip():
                     return
-        # Most common langgraph signature.
+        # Nothing assistant-side was persisted for this turn — add the answer.
         try:
             update_state(config, {"messages": [{"role": "assistant", "content": text}]})
         except TypeError:
