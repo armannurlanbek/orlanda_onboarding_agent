@@ -1949,12 +1949,11 @@ async def chat_stream(
         "configurable": {"thread_id": thread_id},
         "recursion_limit": RAG_MAX_AGENT_RECURSION_LIMIT,
     }
-    # NOTE: build_agent must run off the event loop. Inside it, MCP tools are
-    # fetched via `_run_async_sync(client.get_tools())`, which short-circuits to
-    # `None` (returning zero Monday tools) when invoked from a thread that
-    # already has a running loop. Running it via `asyncio.to_thread` puts the
-    # call on a worker without a loop, so `asyncio.run` succeeds and the Monday
-    # toolset actually loads. Same reason for the history prep below.
+    # NOTE: build_agent loads MCP tools via `_run_async_sync(client.get_tools())`.
+    # It now runs the coroutine on a dedicated background loop if a loop is already
+    # running (instead of returning zero tools), so it is safe either way. We still
+    # offload via `asyncio.to_thread` so the (blocking) tool load + history prep
+    # never stall this request's event loop. Same reason for the history prep below.
     runtime_agent = await asyncio.to_thread(
         build_agent,
         extra_tools=[],

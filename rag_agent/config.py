@@ -98,6 +98,18 @@ RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS = max(
     30,
     int(os.environ.get("RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS", "600")),
 )
+# Bounded retry for transient Monday MCP failures (connection reset / 5xx /
+# session-termination 500) on both tool loading and tool invocation. Keep small;
+# the goal is to ride out blips, not to hammer a degraded upstream.
+RAG_MONDAY_MCP_MAX_RETRIES = max(
+    0,
+    min(5, int(os.environ.get("RAG_MONDAY_MCP_MAX_RETRIES", "2"))),
+)
+# Base backoff (seconds) between retries; grows linearly with the attempt number.
+RAG_MONDAY_MCP_RETRY_BACKOFF_SECONDS = max(
+    0.0,
+    min(5.0, float(os.environ.get("RAG_MONDAY_MCP_RETRY_BACKOFF_SECONDS", "0.5"))),
+)
 RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS = os.environ.get(
     "RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS",
     "true",

@@ -9,12 +9,13 @@ import hashlib
 import json
 import logging
 import secrets
+import threading
 import time
 import contextvars
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib import parse, request
+from urllib import error as urllib_error, parse, request
 
 from langchain_core.tools import StructuredTool
 from sqlalchemy import delete, func, select
@@ -22,7 +23,9 @@ from sqlalchemy import delete, func, select
 from rag_agent.config import (
     MONDAY_ENCRYPTION_KEY,
     RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS,
+    RAG_MONDAY_MCP_MAX_RETRIES,
     RAG_MONDAY_MCP_MAX_TOOLS,
+    RAG_MONDAY_MCP_RETRY_BACKOFF_SECONDS,
     RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS,
     RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS,
     RAG_MONDAY_MCP_TIMEOUT_SECONDS,
@@ -244,7 +247,10 @@ def get_monday_status(username: str) -> MondayStatus:
             return MondayStatus(connected=False)
         revoked = conn.revoked_at is not None
         token = _decrypt_token(conn.access_token_encrypted)
-        connected = bool(token and not revoked)
+        # A stored access token (even if near/at expiry) is considered connected as
+        # long as we hold a refresh token to mint a fresh one on the next chat turn.
+        has_refresh = bool(_decrypt_token(conn.refresh_token_encrypted))
+        connected = bool((token or has_refresh) and not revoked)
         return MondayStatus(
             connected=connected,
             monday_user_id=conn.monday_user_id,
@@ -407,6 +413,129 @@ def disconnect_monday(username: str) -> None:
         db.close()
 
 
+# Seconds before `expires_at` at which we proactively refresh the access token,
+# so an in-flight chat turn never starts with a token about to expire.
+_TOKEN_REFRESH_LEEWAY_SECONDS = 60
+
+# Per-user locks to avoid a refresh stampede when concurrent requests for the same
+# user all observe an expired token at once. Keyed by lowercased username.
+_refresh_locks_guard = threading.Lock()
+_refresh_locks: dict[str, threading.Lock] = {}
+
+
+def _refresh_lock_for(username: str) -> threading.Lock:
+    key = (username or "").strip().lower()
+    with _refresh_locks_guard:
+        lock = _refresh_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _refresh_locks[key] = lock
+        return lock
+
+
+def _token_needs_refresh(conn: MondayUserConnection, token: str) -> bool:
+    """True when the stored access token is missing or within the refresh leeway."""
+    if not token:
+        return True
+    if conn.expires_at is None:
+        return False
+    return conn.expires_at <= (_utcnow() + timedelta(seconds=_TOKEN_REFRESH_LEEWAY_SECONDS))
+
+
+def _refresh_access_token_for_user(username: str) -> str:
+    """Refresh the per-user monday access token via the OAuth refresh-token grant.
+
+    Returns the fresh (decrypted) access token on success, or "" on any failure
+    (no refresh token, network/HTTP error, error payload) so the caller reports
+    the user as disconnected. Never logs token values — only counts/reasons.
+
+    A per-user lock serializes concurrent refreshes; after acquiring the lock we
+    re-read the row so a token refreshed by another waiter is reused instead of
+    triggering a second refresh.
+    """
+    if not RAG_MONDAY_OAUTH_CLIENT_ID or not RAG_MONDAY_OAUTH_CLIENT_SECRET:
+        logger.warning("Monday token refresh skipped: OAuth client id/secret not configured")
+        return ""
+
+    lock = _refresh_lock_for(username)
+    with lock:
+        db = get_session_factory()()
+        try:
+            user = _resolve_user(db, username)
+            if not user:
+                return ""
+            conn = db.scalar(select(MondayUserConnection).where(MondayUserConnection.user_id == user.id))
+            if not conn or conn.revoked_at is not None:
+                return ""
+
+            # Another waiter may have already refreshed while we blocked on the lock.
+            current = _decrypt_token(conn.access_token_encrypted)
+            if not _token_needs_refresh(conn, current):
+                return current
+
+            refresh_token = _decrypt_token(conn.refresh_token_encrypted)
+            if not refresh_token:
+                logger.warning("Monday token refresh unavailable: no stored refresh token for user")
+                return ""
+
+            try:
+                token_response = _post_form(
+                    RAG_MONDAY_OAUTH_TOKEN_URL,
+                    {
+                        "grant_type": "refresh_token",
+                        "client_id": RAG_MONDAY_OAUTH_CLIENT_ID,
+                        "client_secret": RAG_MONDAY_OAUTH_CLIENT_SECRET,
+                        "refresh_token": refresh_token,
+                    },
+                )
+            except urllib_error.HTTPError as exc:
+                logger.warning("Monday token refresh failed: HTTP %s", getattr(exc, "code", "?"))
+                return ""
+            except (urllib_error.URLError, TimeoutError, OSError) as exc:
+                logger.warning("Monday token refresh failed: network error (%s)", type(exc).__name__)
+                return ""
+            except Exception:
+                logger.warning("Monday token refresh failed: unexpected error parsing response")
+                return ""
+
+            new_access = str(token_response.get("access_token") or "").strip()
+            if not new_access:
+                err = str(token_response.get("error") or "no access_token in response")
+                logger.warning("Monday token refresh failed: %s", err)
+                return ""
+
+            # Monday may or may not rotate the refresh token; keep the old one if absent.
+            new_refresh = str(token_response.get("refresh_token") or "").strip()
+            scope = str(token_response.get("scope") or "").strip() or conn.scope
+            token_type = str(token_response.get("token_type") or "").strip() or conn.token_type or "Bearer"
+
+            new_expires_at = None
+            expires_in = token_response.get("expires_in")
+            if isinstance(expires_in, (int, float)) and float(expires_in) > 0:
+                new_expires_at = _utcnow() + timedelta(seconds=float(expires_in))
+
+            conn.access_token_encrypted = _encrypt_token(new_access)
+            if new_refresh:
+                conn.refresh_token_encrypted = _encrypt_token(new_refresh)
+            conn.token_type = token_type
+            conn.scope = scope
+            conn.expires_at = new_expires_at
+            conn.revoked_at = None
+            conn.updated_at = _utcnow()
+            db.commit()
+            logger.info("Monday access token refreshed successfully for user")
+            return new_access
+        except Exception:
+            logger.warning("Monday token refresh failed: unexpected error persisting new token")
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return ""
+        finally:
+            db.close()
+
+
 def _get_access_token_for_user(username: str) -> str:
     _ensure_tables()
     db = get_session_factory()()
@@ -417,11 +546,16 @@ def _get_access_token_for_user(username: str) -> str:
         conn = db.scalar(select(MondayUserConnection).where(MondayUserConnection.user_id == user.id))
         if not conn or conn.revoked_at is not None:
             return ""
-        if conn.expires_at and conn.expires_at <= _utcnow():
-            return ""
-        return _decrypt_token(conn.access_token_encrypted)
+        token = _decrypt_token(conn.access_token_encrypted)
+        needs_refresh = _token_needs_refresh(conn, token)
     finally:
         db.close()
+
+    # Refresh outside the read session so the refresh path owns its own DB session
+    # and per-user lock (avoids holding a session open across a network call).
+    if needs_refresh:
+        return _refresh_access_token_for_user(username)
+    return token
 
 
 _tools_cache: dict[str, tuple[float, list]] = {}
@@ -440,13 +574,164 @@ def _configure_mcp_logging() -> None:
     logging.getLogger("mcp.client.streamable_http").setLevel(logging.ERROR)
 
 
-def _run_async_sync(coro):
+def _run_coro_on_background_loop(make_coro):
+    """Run a coroutine to completion on a dedicated background thread + loop.
+
+    Used to bridge sync→async when the caller is already inside a running event
+    loop (where `asyncio.run` would raise). Accepts a zero-arg factory so the
+    coroutine is created on the background loop's thread, which avoids
+    "attached to a different loop" errors. Blocks the calling thread until done.
+    """
+    result_box: dict[str, Any] = {}
+    error_box: dict[str, BaseException] = {}
+
+    def _worker() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            result_box["value"] = loop.run_until_complete(make_coro())
+        except BaseException as exc:  # noqa: BLE001 - propagate to caller thread
+            error_box["error"] = exc
+        finally:
+            try:
+                loop.close()
+            finally:
+                asyncio.set_event_loop(None)
+
+    thread = threading.Thread(target=_worker, name="monday-mcp-loop", daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in error_box:
+        raise error_box["error"]
+    return result_box.get("value")
+
+
+def _run_async_sync(make_coro):
+    """Execute an async coroutine factory from sync code, regardless of context.
+
+    `make_coro` MUST be a zero-arg callable returning a fresh coroutine (not a
+    coroutine object) so it can be (re)created on whichever loop ends up running
+    it. When no event loop is running we use `asyncio.run`; when one IS running
+    (e.g. a future async caller) we offload to a dedicated background loop instead
+    of silently returning None and yielding an empty toolset.
+    """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
-    logger.warning("Cannot load MCP tools: running event loop detected in sync path.")
-    return None
+        return asyncio.run(make_coro())
+    # A loop is already running on this thread; run on an isolated background loop.
+    return _run_coro_on_background_loop(make_coro)
+
+
+_TRANSIENT_MCP_MARKERS = (
+    "connection reset",
+    "connection aborted",
+    "connection closed",
+    "server disconnected",
+    "remote end closed",
+    "broken pipe",
+    "temporarily unavailable",
+    "timed out",
+    "timeout",
+    "read timeout",
+    "502",
+    "503",
+    "504",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    "internal server error",
+    "session terminated",
+    "terminate",  # the suppressed "termination 500" on MCP session teardown
+)
+
+
+def _is_transient_mcp_error(exc: BaseException) -> bool:
+    """Heuristic: True for blips worth retrying (resets, 5xx, session teardown).
+
+    Validation / not-found / permission errors are NOT transient — retrying them
+    just wastes a turn, so those fall through to the model-readable guard message.
+    """
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    if isinstance(exc, (urllib_error.URLError,)):
+        return True
+    txt = str(exc or "").lower()
+    # Don't treat a 500 that is actually a GraphQL validation echo as transient.
+    if "input validation error" in txt or "-32602" in txt:
+        return False
+    return any(marker in txt for marker in _TRANSIENT_MCP_MARKERS)
+
+
+async def _aretry(call_once, tool_name: str):
+    """Run an async no-arg call with a bounded retry on transient MCP failures.
+
+    Re-raises the last exception so the existing per-tool guard formatting turns it
+    into a model-readable message. Non-transient errors are raised immediately.
+    """
+    attempts = RAG_MONDAY_MCP_MAX_RETRIES + 1
+    last_exc: BaseException | None = None
+    for attempt in range(attempts):
+        try:
+            return await call_once()
+        except Exception as exc:  # noqa: BLE001 - re-raised below for guard formatting
+            last_exc = exc
+            if attempt >= attempts - 1 or not _is_transient_mcp_error(exc):
+                raise
+            backoff = RAG_MONDAY_MCP_RETRY_BACKOFF_SECONDS * (attempt + 1)
+            logger.warning(
+                "Transient Monday MCP failure invoking `%s` (attempt %d/%d, %s); retrying in %.2fs",
+                tool_name,
+                attempt + 1,
+                attempts,
+                type(exc).__name__,
+                backoff,
+            )
+            if backoff > 0:
+                await asyncio.sleep(backoff)
+    if last_exc is not None:
+        raise last_exc
+
+
+async def _ainvoke_with_retry(async_tool, kwargs: dict[str, Any], tool_name: str):
+    """Bounded-retry wrapper around a LangChain tool's `.ainvoke`."""
+    return await _aretry(lambda: async_tool.ainvoke(kwargs), tool_name)
+
+
+async def _aretry_coroutine(coro_tool, tool_name: str, kwargs: dict[str, Any]):
+    """Bounded-retry wrapper around a raw MCP tool coroutine callable."""
+    return await _aretry(lambda: coro_tool(**kwargs), tool_name)
+
+
+def _load_tools_with_retry(make_get_tools_coro):
+    """Load MCP tools with a bounded retry on transient connection failures.
+
+    `make_get_tools_coro` is a zero-arg coroutine factory (so it can be re-run on a
+    fresh attempt / background loop). Returns the loaded tools list, or re-raises
+    the last error after exhausting retries (caller treats that as "no tools").
+    """
+    attempts = RAG_MONDAY_MCP_MAX_RETRIES + 1
+    last_exc: BaseException | None = None
+    for attempt in range(attempts):
+        try:
+            return _run_async_sync(make_get_tools_coro)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt >= attempts - 1 or not _is_transient_mcp_error(exc):
+                raise
+            backoff = RAG_MONDAY_MCP_RETRY_BACKOFF_SECONDS * (attempt + 1)
+            logger.warning(
+                "Transient Monday MCP failure loading tools (attempt %d/%d, %s); retrying in %.2fs",
+                attempt + 1,
+                attempts,
+                type(exc).__name__,
+                backoff,
+            )
+            if backoff > 0:
+                time.sleep(backoff)
+    if last_exc is not None:
+        raise last_exc
+    return []
 
 
 def _ensure_sync_callable_tools(tools: list) -> list:
@@ -487,7 +772,7 @@ def _ensure_sync_callable_tools(tools: list) -> list:
                     return _safe_sync_func(**kwargs)
                 try:
                     _bump_monday_call(name or "monday_tool")
-                    return await coroutine(**kwargs)
+                    return await _aretry_coroutine(coroutine, name or "monday_tool", kwargs)
                 except Exception as e:
                     return _format_tool_error_for_model(name or "monday_tool", e)
 
@@ -517,7 +802,11 @@ def _ensure_sync_callable_tools(tools: list) -> list:
                     )
                 try:
                     _bump_monday_call(tool_name)
-                    return asyncio.run(async_tool.ainvoke(kwargs))
+                    # Robust sync→async bridge (works even under a running loop) with
+                    # a bounded retry on transient MCP failures.
+                    return _run_async_sync(
+                        lambda: _ainvoke_with_retry(async_tool, dict(kwargs), tool_name)
+                    )
                 except Exception as e:
                     return _format_tool_error_for_model(tool_name, e)
 
@@ -533,7 +822,7 @@ def _ensure_sync_callable_tools(tools: list) -> list:
                 )
             try:
                 _bump_monday_call(tool_name)
-                return await coro_tool(**kwargs)
+                return await _aretry_coroutine(coro_tool, tool_name, kwargs)
             except Exception as e:
                 return _format_tool_error_for_model(tool_name, e)
 
@@ -696,6 +985,11 @@ def get_monday_mcp_tools_for_user(username: str) -> list:
             "langchain-mcp-adapters is not installed; monday tools unavailable"
         )
         return []
+    # One client per load; the per-tool connection config (incl. the bearer token)
+    # is shared by every tool the adapter produces. NOTE: with langchain-mcp-adapters
+    # 0.2.2, `get_tools()` returns tools bound to a *connection* (session=None), so
+    # each invocation still opens its own short-lived HTTP session — see the deferral
+    # note in the change report for what a true per-turn session would require.
     client = MultiServerMCPClient(
         {
             "monday": {
@@ -706,8 +1000,16 @@ def get_monday_mcp_tools_for_user(username: str) -> list:
             }
         }
     )
-    tools = _run_async_sync(client.get_tools()) or []
-    tools = _ensure_sync_callable_tools(tools)
+    try:
+        # Factory (not a coroutine object) so it can be re-created per retry/loop.
+        raw_tools = _load_tools_with_retry(lambda: client.get_tools()) or []
+    except Exception:
+        # Transient retries exhausted (or a hard failure). Do NOT cache the empty
+        # result — a later turn should re-attempt rather than appear toolless for
+        # the whole cache TTL.
+        logger.warning("Failed to load Monday MCP tools after retries; reporting no tools this turn")
+        return []
+    tools = _ensure_sync_callable_tools(raw_tools)
     if RAG_MONDAY_MCP_TOOL_ALLOWLIST:
         tools = [t for t in tools if str(getattr(t, "name", "")).strip() in RAG_MONDAY_MCP_TOOL_ALLOWLIST]
     tools = _cap_monday_tools(tools, RAG_MONDAY_MCP_MAX_TOOLS)
