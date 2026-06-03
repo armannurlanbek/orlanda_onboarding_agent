@@ -255,17 +255,28 @@ export const api = {
         `/chat/history?conversation_id=${encodeURIComponent(conversationId)}`,
         { token },
       );
-      // The backend may persist the same assistant answer more than once (e.g. a
-      // best-effort "ensure assistant turn" guard appends a duplicate when the final
-      // text is not the literal last message). Collapse adjacent identical turns so a
-      // refresh renders each message exactly once. IDs are stable (no Date.now) so
-      // React keys stay consistent across refetches.
+      // The backend can persist the same assistant answer more than once: its
+      // best-effort "ensure assistant turn" guard appends a duplicate whenever its
+      // exact-string match misses (structured-JSON vs streamed text, or whitespace
+      // differences), and conversations that doubled before the backend fix shipped
+      // still hold those duplicate rows. Collapse a repeated assistant turn within
+      // the SAME exchange — i.e. an assistant message whose whitespace-normalized
+      // text matches the previous assistant turn with no user message since. We
+      // reset on every user turn, so legitimate distinct Q&A pairs are never merged.
+      // Stable ids (no Date.now) keep React keys consistent across refetches.
+      const norm = (s: string) => s.trim().replace(/\s+/g, " ");
       const result: Message[] = [];
+      let lastAssistantNorm: string | null = null;
       (data.messages || []).forEach((m, index) => {
         const role = normalizeRole(m.role);
         const content = String(m.content || "");
-        const prev = result[result.length - 1];
-        if (prev && prev.role === role && prev.content === content) return;
+        const n = norm(content);
+        if (role === "assistant") {
+          if (n && n === lastAssistantNorm) return; // duplicate assistant turn for this exchange
+          lastAssistantNorm = n;
+        } else {
+          lastAssistantNorm = null; // a user turn starts a new exchange
+        }
         result.push({
           id: `h-${conversationId}-${index}`,
           role,
