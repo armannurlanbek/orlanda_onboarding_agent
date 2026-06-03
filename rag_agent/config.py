@@ -1,8 +1,11 @@
 """
 Central config from environment. Required in production.
 """
+import ipaddress
+import logging
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -139,7 +142,11 @@ CHECKPOINT_POSTGRES_URL = os.environ.get("CHECKPOINT_POSTGRES_URL", "").strip() 
 API_HOST = os.environ.get("RAG_AGENT_API_HOST", "0.0.0.0")
 API_PORT = int(os.environ.get("PORT", os.environ.get("RAG_AGENT_API_PORT", "8000")))
 # Optional absolute frontend URL used for OAuth callback redirects in split dev/prod setups.
-# Example: http://192.168.0.205:8080
+# In production this MUST be your public https origin (e.g. https://platform.n8norlanda.com)
+# or left EMPTY. Leaving it empty makes the post-OAuth 302 a same-origin relative path
+# ("/chat?..."), which is correct when the API and frontend share the public host.
+# NEVER set this to a private/LAN address (192.168.x.x / 10.x / 172.16-31.x) — the
+# user's browser cannot reach it and OAuth will appear to "not log in".
 RAG_FRONTEND_BASE_URL = os.environ.get("RAG_FRONTEND_BASE_URL", "").strip().rstrip("/")
 
 # PostgreSQL (SQLAlchemy + Alembic). Example:
@@ -231,3 +238,56 @@ def require_runtime_keys() -> None:
             "Generate a strong secret with: python -c \"import secrets; print(secrets.token_hex(32))\" "
             "and set it as RAG_AGENT_SECRET_KEY in .env or the environment before starting."
         )
+
+
+def _is_private_or_lan_url(url: str) -> bool:
+    """True if the URL host is a private/LAN/loopback IP (192.168/10/172.16-31/127)."""
+    host = (urlsplit(url).hostname or "").strip()
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local
+
+
+def warn_oauth_redirect_misconfig() -> None:
+    """Log (never raise) when OAuth/frontend URLs look like dev/LAN misconfig.
+
+    Catches the classic "Authorize sends me to a 192.168.x.x address" bug early:
+    the Monday redirect_uri (sent to Monday at authorize time, and what the browser
+    is bounced back to) and the post-callback frontend redirect base must be your
+    PUBLIC https origin, never a private/LAN IP or plain http.
+    """
+    log = logging.getLogger(__name__)
+    redirect = (RAG_MONDAY_OAUTH_REDIRECT_URI or "").strip()
+    if redirect:
+        if _is_private_or_lan_url(redirect):
+            log.warning(
+                "RAG_MONDAY_OAUTH_REDIRECT_URI points at a private/LAN/loopback address "
+                "(%s). Monday will bounce users' browsers there after Authorize and login "
+                "will fail. Set it to your public https callback, e.g. "
+                "https://platform.n8norlanda.com/auth/monday/callback (and register the same "
+                "URL in the Monday developer app).",
+                redirect,
+            )
+        elif redirect.lower().startswith("http://"):
+            log.warning(
+                "RAG_MONDAY_OAUTH_REDIRECT_URI uses plain http (%s); use https in production.",
+                redirect,
+            )
+    if RAG_FRONTEND_BASE_URL:
+        if _is_private_or_lan_url(RAG_FRONTEND_BASE_URL):
+            log.warning(
+                "RAG_FRONTEND_BASE_URL points at a private/LAN/loopback address (%s); the "
+                "post-OAuth redirect will land users on an unreachable host. Set it to your "
+                "public https origin (e.g. https://platform.n8norlanda.com) or leave it empty "
+                "to use a same-origin relative redirect.",
+                RAG_FRONTEND_BASE_URL,
+            )
+        elif RAG_FRONTEND_BASE_URL.lower().startswith("http://"):
+            log.warning(
+                "RAG_FRONTEND_BASE_URL uses plain http (%s); use https in production.",
+                RAG_FRONTEND_BASE_URL,
+            )

@@ -66,6 +66,7 @@ from rag_agent.config import (
     RAG_RATE_LIMIT_REGISTER,
     RAG_USERNAME_MAX_LEN,
     require_runtime_keys,
+    warn_oauth_redirect_misconfig,
 )
 from rag_agent.audit_log import count_audit, list_audit, write_audit
 from rag_agent.monday_auth import (
@@ -285,6 +286,7 @@ class AdminModelUpdate(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     require_runtime_keys()
+    warn_oauth_redirect_misconfig()
     logger.info("Active chat model: %s", get_active_model_name())
     try:
         yield
