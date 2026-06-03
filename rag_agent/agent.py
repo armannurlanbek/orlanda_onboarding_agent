@@ -4,6 +4,7 @@ LangChain agent instance with switchable chat model.
 import asyncio
 import json
 import logging
+import os
 import yaml
 from dataclasses import dataclass
 
@@ -41,6 +42,7 @@ def _load_system_prompt() -> str:
 
 _checkpointer_cm = None
 _checkpointer = None
+_checkpointer_pool = None
 
 
 def _postgres_checkpoint_dsn(raw_url: str) -> str:
@@ -97,7 +99,7 @@ def _attach_async_compat(saver) -> None:
 
 def _get_checkpointer():
     """Create a valid checkpoint saver instance for configured backend."""
-    global _checkpointer_cm, _checkpointer
+    global _checkpointer_cm, _checkpointer, _checkpointer_pool
     if _checkpointer is not None:
         return _checkpointer
 
@@ -120,8 +122,36 @@ def _get_checkpointer():
                 "CHECKPOINT_BACKEND=postgres requires langgraph-checkpoint-postgres. "
                 "Run: pip install langgraph-checkpoint-postgres"
             ) from None
-        _checkpointer_cm = PostgresSaver.from_conn_string(dsn)
-        _checkpointer = _checkpointer_cm.__enter__()
+        from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
+
+        # A single long-lived connection (PostgresSaver.from_conn_string) dies whenever
+        # the db-router drops an idle socket or a pg_auto_failover switchover/restart
+        # severs it, and is never revalidated -> every later chat raises
+        # "the connection is closed" until the process restarts. Use a pooled saver
+        # that health-checks (and replaces) the connection on each checkout, mirroring
+        # the SQLAlchemy engine's pool_pre_ping=True.
+        _checkpointer_pool = ConnectionPool(
+            conninfo=dsn,
+            min_size=1,
+            max_size=int(os.environ.get("CHECKPOINT_POOL_MAX_SIZE", "10")),
+            timeout=30,
+            max_idle=120,
+            kwargs={
+                # PostgresSaver requires these exact connection settings.
+                "autocommit": True,
+                "prepare_threshold": 0,
+                "row_factory": dict_row,
+                # TCP keepalives so the db-router doesn't silently drop idle conns.
+                "keepalives": 1,
+                "keepalives_idle": 30,
+                "keepalives_interval": 10,
+                "keepalives_count": 5,
+            },
+            check=ConnectionPool.check_connection,
+            open=True,
+        )
+        _checkpointer = PostgresSaver(_checkpointer_pool)
         setup_fn = getattr(_checkpointer, "setup", None)
         if callable(setup_fn):
             setup_fn()
@@ -147,16 +177,23 @@ def _get_checkpointer():
 
 
 def close_checkpointer() -> None:
-    """Close checkpointer context if we opened one."""
-    global _checkpointer_cm, _checkpointer
+    """Close checkpointer context/pool if we opened one."""
+    global _checkpointer_cm, _checkpointer, _checkpointer_pool
     if _checkpointer_cm is not None:
         try:
             _checkpointer_cm.__exit__(None, None, None)
         except Exception:
             # Best-effort cleanup; shutdown should still succeed.
             pass
+    if _checkpointer_pool is not None:
+        try:
+            _checkpointer_pool.close()
+        except Exception:
+            # Best-effort cleanup; shutdown should still succeed.
+            pass
     _checkpointer_cm = None
     _checkpointer = None
+    _checkpointer_pool = None
 
 
 def delete_conversation_state(thread_id: str) -> None:
