@@ -77,6 +77,7 @@ from rag_agent.monday_auth import (
     disconnect_monday,
     get_monday_call_stats,
     get_monday_status,
+    monday_session_tools,
     start_monday_oauth,
 )
 from rag_agent.indexing import (
@@ -1958,35 +1959,41 @@ async def chat_stream(
         "configurable": {"thread_id": thread_id},
         "recursion_limit": RAG_MAX_AGENT_RECURSION_LIMIT,
     }
-    # NOTE: build_agent loads MCP tools via `_run_async_sync(client.get_tools())`.
-    # It now runs the coroutine on a dedicated background loop if a loop is already
-    # running (instead of returning zero tools), so it is safe either way. We still
-    # offload via `asyncio.to_thread` so the (blocking) tool load + history prep
-    # never stall this request's event loop. Same reason for the history prep below.
-    runtime_agent = await asyncio.to_thread(
-        build_agent,
-        extra_tools=[],
-        monday_username=username,
-        include_monday_tools=include_monday_tools,
-        include_retrieve_context=not monday_write_intent,
-    )
-    begin_monday_call_stats()
-    try:
-        if await asyncio.to_thread(_repair_conversation_history_for_provider, runtime_agent, config):
-            push_event("system", "history_repair", "success", "Conversation history was repaired.")
-        if RAG_MAX_HISTORY_MESSAGES > 0:
-            try:
-                if await asyncio.to_thread(_compact_conversation_history, runtime_agent, config):
-                    push_event("system", "history_guard", "success", "Conversation history was compacted.")
-            except Exception:
-                pass
-    except Exception:
-        logger.exception("history prep failed in chat_stream")
-
     async def event_generator():
         accumulated_parts: list[str] = []
         final_content = ""
+        # Open ONE Monday MCP session for the whole turn (reused by every tool call)
+        # instead of a fresh HTTP session per call. monday_session_tools internally
+        # falls back to the per-call loader if a persistent session can't be opened,
+        # so this never regresses. It is built HERE so the session lives on this
+        # request's event loop for the entire stream (a ClientSession is loop-bound).
+        _monday_cm = monday_session_tools(username, enabled=include_monday_tools)
+        _monday_entered = False
         try:
+            monday_tools = await _monday_cm.__aenter__()
+            _monday_entered = True
+            # build_agent only assembles the graph here (tools already loaded);
+            # offloaded so the sync build + history prep never stall the event loop.
+            runtime_agent = await asyncio.to_thread(
+                build_agent,
+                extra_tools=monday_tools,
+                monday_username=username,
+                include_monday_tools=False,
+                include_retrieve_context=not monday_write_intent,
+            )
+            begin_monday_call_stats()
+            try:
+                if await asyncio.to_thread(_repair_conversation_history_for_provider, runtime_agent, config):
+                    push_event("system", "history_repair", "success", "Conversation history was repaired.")
+                if RAG_MAX_HISTORY_MESSAGES > 0:
+                    try:
+                        if await asyncio.to_thread(_compact_conversation_history, runtime_agent, config):
+                            push_event("system", "history_guard", "success", "Conversation history was compacted.")
+                    except Exception:
+                        pass
+            except Exception:
+                logger.exception("history prep failed in chat_stream")
+
             async for ev in runtime_agent.astream_events(
                 {"messages": [{"role": "user", "content": user_message}]},
                 config=config,
@@ -2099,6 +2106,13 @@ async def chat_stream(
                 + json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
                 + "\n\n"
             )
+        finally:
+            # Close the per-turn Monday MCP session (no-op if it never opened).
+            if _monday_entered:
+                try:
+                    await _monday_cm.__aexit__(None, None, None)
+                except Exception:
+                    pass
 
     return StreamingResponse(
         event_generator(),

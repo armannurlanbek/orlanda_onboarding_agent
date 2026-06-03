@@ -121,6 +121,18 @@ RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS = os.environ.get(
     "RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS",
     "true",
 ).strip().lower() in {"1", "true", "yes", "on"}
+# Reuse ONE MCP session for all tool calls within a single streaming chat turn
+# instead of opening a fresh short-lived HTTP session per tool call (the default
+# langchain-mcp-adapters behavior). A multi-step turn otherwise opens 15-30
+# sessions, each with its own connect+initialize+teardown — the main source of
+# "monday mcp is not stable". Only affects the async /chat/stream path; the sync
+# /chat path keeps per-call sessions. Set to false to disable (kill-switch) if the
+# persistent session ever misbehaves; it also falls back to per-call automatically
+# whenever a session cannot be established.
+RAG_MONDAY_MCP_PERSISTENT_SESSION = os.environ.get(
+    "RAG_MONDAY_MCP_PERSISTENT_SESSION",
+    "true",
+).strip().lower() in {"1", "true", "yes", "on"}
 RAG_MAX_AGENT_RECURSION_LIMIT = max(
     6,
     int(os.environ.get("RAG_MAX_AGENT_RECURSION_LIMIT", "12")),

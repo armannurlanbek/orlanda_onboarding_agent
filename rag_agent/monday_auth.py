@@ -12,6 +12,7 @@ import secrets
 import threading
 import time
 import contextvars
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -25,6 +26,7 @@ from rag_agent.config import (
     RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS,
     RAG_MONDAY_MCP_MAX_RETRIES,
     RAG_MONDAY_MCP_MAX_TOOLS,
+    RAG_MONDAY_MCP_PERSISTENT_SESSION,
     RAG_MONDAY_MCP_RETRY_BACKOFF_SECONDS,
     RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS,
     RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS,
@@ -1020,6 +1022,42 @@ def _cap_optional_params(tools: list, max_optional_params: int) -> list:
     return kept
 
 
+def _build_monday_mcp_client(token: str):
+    """Construct a MultiServerMCPClient for the per-user monday connection.
+
+    Raises ImportError if langchain-mcp-adapters is not installed.
+    """
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    return MultiServerMCPClient(
+        {
+            "monday": {
+                "transport": RAG_MONDAY_MCP_TRANSPORT,
+                "url": RAG_MONDAY_MCP_URL,
+                "headers": {"Authorization": f"Bearer {token}"},
+                "timeout": RAG_MONDAY_MCP_TIMEOUT_SECONDS,
+            }
+        }
+    )
+
+
+def _prepare_monday_tools(raw_tools: list) -> list:
+    """Wrap + filter + cap raw MCP tools identically for every load path.
+
+    Shared by the per-call loader and the persistent-session loader so both apply
+    the same guards, denylist, allowlist and essential-tool-preserving caps.
+    """
+    tools = _ensure_sync_callable_tools(raw_tools)
+    # Drop UI-internal / agent-unsafe tools the server may advertise.
+    tools = [t for t in tools if str(getattr(t, "name", "")).strip() not in _MONDAY_TOOL_DENYLIST]
+    if RAG_MONDAY_MCP_TOOL_ALLOWLIST:
+        tools = [t for t in tools if str(getattr(t, "name", "")).strip() in RAG_MONDAY_MCP_TOOL_ALLOWLIST]
+    tools = _cap_monday_tools(tools, RAG_MONDAY_MCP_MAX_TOOLS)
+    if RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS > 0:
+        tools = _cap_optional_params(tools, RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS)
+    return tools
+
+
 def get_monday_mcp_tools_for_user(username: str) -> list:
     _configure_mcp_logging()
     token = _get_access_token_for_user(username)
@@ -1031,29 +1069,15 @@ def get_monday_mcp_tools_for_user(username: str) -> list:
     if cached and (now - cached[0]) < _TOOLS_CACHE_TTL_SECONDS:
         return list(cached[1])
     try:
-        from langchain_mcp_adapters.client import MultiServerMCPClient
+        client = _build_monday_mcp_client(token)
     except ImportError:
-        logger.warning(
-            "langchain-mcp-adapters is not installed; monday tools unavailable"
-        )
+        logger.warning("langchain-mcp-adapters is not installed; monday tools unavailable")
         return []
-    # One client per load; the per-tool connection config (incl. the bearer token)
-    # is shared by every tool the adapter produces. NOTE: with langchain-mcp-adapters
-    # 0.2.2, `get_tools()` returns tools bound to a *connection* (session=None), so
-    # each invocation still opens its own short-lived HTTP session — see the deferral
-    # note in the change report for what a true per-turn session would require.
-    client = MultiServerMCPClient(
-        {
-            "monday": {
-                "transport": RAG_MONDAY_MCP_TRANSPORT,
-                "url": RAG_MONDAY_MCP_URL,
-                "headers": {"Authorization": f"Bearer {token}"},
-                "timeout": RAG_MONDAY_MCP_TIMEOUT_SECONDS,
-            }
-        }
-    )
     try:
         # Factory (not a coroutine object) so it can be re-created per retry/loop.
+        # NOTE: get_tools() binds each tool to a *connection* (session=None), so every
+        # invocation opens its own short-lived HTTP session. The async streaming path
+        # uses `monday_session_tools(...)` instead, which reuses ONE session per turn.
         raw_tools = _load_tools_with_retry(lambda: client.get_tools()) or []
     except Exception:
         # Transient retries exhausted (or a hard failure). Do NOT cache the empty
@@ -1061,19 +1085,82 @@ def get_monday_mcp_tools_for_user(username: str) -> list:
         # the whole cache TTL.
         logger.warning("Failed to load Monday MCP tools after retries; reporting no tools this turn")
         return []
-    tools = _ensure_sync_callable_tools(raw_tools)
-    # Drop UI-internal / agent-unsafe tools the server may advertise.
-    tools = [t for t in tools if str(getattr(t, "name", "")).strip() not in _MONDAY_TOOL_DENYLIST]
-    if RAG_MONDAY_MCP_TOOL_ALLOWLIST:
-        tools = [t for t in tools if str(getattr(t, "name", "")).strip() in RAG_MONDAY_MCP_TOOL_ALLOWLIST]
-    tools = _cap_monday_tools(tools, RAG_MONDAY_MCP_MAX_TOOLS)
-    # Optional-param capping is OFF by default (budget 0). It used to silently
-    # evict the discovery tools (get_board_info/search/...), so it now runs only
-    # when explicitly configured > 0.
-    if RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS > 0:
-        tools = _cap_optional_params(tools, RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS)
+    tools = _prepare_monday_tools(raw_tools)
     _tools_cache[key_digest] = (now, list(tools))
     return tools
+
+
+@asynccontextmanager
+async def monday_session_tools(username: str, *, enabled: bool = True):
+    """Yield monday tools bound to ONE MCP session kept open for the whole turn.
+
+    Reuses a single ``client.session(...)`` for every tool call in the turn rather
+    than opening a fresh HTTP session per call (the default get_tools() behavior,
+    which makes a multi-step turn open 15-30 sessions). Use on the async streaming
+    path::
+
+        async with monday_session_tools(username, enabled=...) as tools:
+            agent = build_agent(extra_tools=tools, include_monday_tools=False, ...)
+            async for ev in agent.astream_events(...):
+                ...
+
+    Safety: yields ``[]`` when disabled / not connected; on ANY failure establishing
+    the persistent session it falls back to the per-call tools
+    (``get_monday_mcp_tools_for_user``) so behavior never regresses below today's.
+    The session is created and torn down on the caller's event loop (a ClientSession
+    is bound to its loop and is not concurrency-safe) — do not offload individual
+    tool calls to other loops/threads while it is open.
+    """
+    if not enabled:
+        yield []
+        return
+
+    token = await asyncio.to_thread(_get_access_token_for_user, username)
+    if not token:
+        yield []
+        return
+
+    if not RAG_MONDAY_MCP_PERSISTENT_SESSION:
+        # Kill-switch: use the per-call path (its own short-lived sessions).
+        yield await asyncio.to_thread(get_monday_mcp_tools_for_user, username)
+        return
+
+    _configure_mcp_logging()
+    session_cm = None
+    tools = None
+    try:
+        from langchain_mcp_adapters.tools import load_mcp_tools
+
+        client = _build_monday_mcp_client(token)
+        session_cm = client.session("monday")
+        session = await session_cm.__aenter__()
+        raw_tools = await load_mcp_tools(session)
+        tools = _prepare_monday_tools(raw_tools)
+    except Exception:
+        # Setup failed: tear down any partial session, fall back to per-call tools.
+        if session_cm is not None:
+            try:
+                await session_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+        logger.warning("Persistent Monday MCP session unavailable; falling back to per-call tools")
+        try:
+            fallback = await asyncio.to_thread(get_monday_mcp_tools_for_user, username)
+        except Exception:
+            fallback = []
+        yield fallback
+        return
+
+    # Session established — keep it open for the whole turn. A consumer exception
+    # propagates out of `yield` (NOT caught here) and the session is torn down in
+    # `finally`, so this can never double-yield.
+    try:
+        yield tools
+    finally:
+        try:
+            await session_cm.__aexit__(None, None, None)
+        except Exception:
+            pass
 
 
 _MONDAY_KEYWORDS = {
