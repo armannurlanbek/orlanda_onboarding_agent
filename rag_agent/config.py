@@ -82,17 +82,24 @@ RAG_MONDAY_MCP_TIMEOUT_SECONDS = int(os.environ.get("RAG_MONDAY_MCP_TIMEOUT_SECO
 RAG_MONDAY_MCP_TOOL_ALLOWLIST = {
     name.strip() for name in os.environ.get("RAG_MONDAY_MCP_TOOL_ALLOWLIST", "").split(",") if name.strip()
 }
-# Anthropic supports at most 20 strict tools in one request.
-# Keep Monday toolset below that ceiling (retrieve_context may also be present).
+# Max Monday tools bound per request. Big enough to keep the full essential
+# read/discovery set (get_board_info, search, list_workspaces, all_monday_api,
+# get_column_type_info, ...) PLUS the core write tools. Anthropic/OpenAI both
+# handle dozens of tools; the old default (18) combined with a write-biased
+# ranking silently evicted the discovery tools the agent needs to find anything.
 RAG_MONDAY_MCP_MAX_TOOLS = max(
     1,
-    min(50, int(os.environ.get("RAG_MONDAY_MCP_MAX_TOOLS", "18"))),
+    min(128, int(os.environ.get("RAG_MONDAY_MCP_MAX_TOOLS", "25"))),
 )
-# Anthropic can reject overly complex tool schemas with too many optional params.
-# Keep a conservative optional-parameter budget across selected monday tools.
+# Optional-parameter budget across selected monday tools. OFF by default (0).
+# The old default (22) was catastrophic: a single heavy tool
+# (get_board_items_page ~15 optional params) exhausted the budget and the greedy
+# walk DROPPED every tool after it, leaving the agent with ~6 mostly-write tools
+# and no way to search boards or read column ids. There is no real provider limit
+# this low. Set >0 only if a specific provider actually rejects the schema set.
 RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS = max(
-    1,
-    min(200, int(os.environ.get("RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS", "22"))),
+    0,
+    min(1000, int(os.environ.get("RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS", "0"))),
 )
 RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS = max(
     30,

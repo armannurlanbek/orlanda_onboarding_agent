@@ -844,46 +844,91 @@ def _ensure_sync_callable_tools(tools: list) -> list:
     return wrapped
 
 
+# Tools the agent must never lose to a cap. Reads/discovery come first because the
+# assistant is read-heavy and EVERY column-filtered or write call must be preceded
+# by get_board_info (to resolve board-specific column ids). The old ranking gave
+# write tools a higher score than reads and omitted get_board_info/list_workspaces
+# entirely, so a tight cap evicted exactly the discovery tools the agent needs.
+# Ordered most load-bearing first, so even an aggressively low cap keeps the
+# tools the agent literally cannot navigate without (entry point -> search ->
+# board metadata -> item reads -> the GraphQL escape hatch).
+_MONDAY_READ_TOOLS = (
+    "get_user_context",
+    "search",
+    "get_board_info",
+    "get_board_items_page",
+    "all_monday_api",
+    "list_workspaces",
+    "workspace_info",
+    "get_column_type_info",
+    "get_graphql_schema",
+    "get_type_details",
+    "list_users_and_teams",
+    "get_updates",
+    "get_board_activity",
+    "board_insights",
+    "read_docs",
+)
+_MONDAY_CORE_WRITE_TOOLS = (
+    "create_item",
+    "change_item_column_values",
+    "create_update",
+    "create_group",
+    "create_column",
+    "create_board",
+    "create_doc",
+    "update_doc",
+)
+_MONDAY_ESSENTIAL_TOOLS = frozenset(_MONDAY_READ_TOOLS + _MONDAY_CORE_WRITE_TOOLS)
+
+# UI-internal / agent-unsafe tools to drop even if the server advertises them.
+# get_full_board_data is explicitly marked "INTERNAL USE ONLY - DO NOT CALL DIRECTLY".
+_MONDAY_TOOL_DENYLIST = frozenset({"get_full_board_data"})
+
+
 def _cap_monday_tools(tools: list, max_tools: int) -> list:
-    """Cap tool count to satisfy provider limits on strict tools."""
+    """Cap tool count while GUARANTEEING the essential read/write tools survive.
+
+    Ranking (lower kept first): essential reads -> essential core writes ->
+    other reads (get_*/list_*/search/*info*) -> everything else. With the default
+    cap (25) and Monday's ~30-40 tool surface, all essentials plus the common
+    writes are retained and only rare/niche tools are dropped.
+    """
     cap = max(1, int(max_tools or 1))
     if len(tools) <= cap:
         return tools
 
-    exact_priority = [
-        "get_user_context",
-        "search",
-        "get_board_items_page",
-        "create_update",
-        "change_simple_column_value",
-        "change_multiple_column_values",
-        "create_item",
-        "create_subitem",
-        "delete_item",
-        "move_item_to_group",
-    ]
-    priority_index = {name: i for i, name in enumerate(exact_priority)}
+    read_index = {name: i for i, name in enumerate(_MONDAY_READ_TOOLS)}
+    write_index = {name: i for i, name in enumerate(_MONDAY_CORE_WRITE_TOOLS)}
     write_markers = ("create_", "update", "delete", "change_", "move_", "set_", "edit", "write", "add_")
 
     def _rank(tool_obj):
-        name = str(getattr(tool_obj, "name", "") or "").strip().lower()
-        score = 0
-        if name in priority_index:
-            score += 1000 - priority_index[name]
-        if any(marker in name for marker in write_markers):
-            score += 200
-        if name.startswith("get_"):
-            score += 100
-        if "search" in name:
-            score += 80
-        return (-score, name)
+        name = str(getattr(tool_obj, "name", "") or "").strip()
+        if name in read_index:
+            return (0, read_index[name], name)
+        if name in write_index:
+            return (1, write_index[name], name)
+        lname = name.lower()
+        is_write = any(marker in lname for marker in write_markers)
+        is_read = (
+            lname.startswith("get_")
+            or lname.startswith("list_")
+            or "search" in lname
+            or "info" in lname
+        )
+        if is_read and not is_write:
+            return (2, 0, name)
+        return (3, 0, name)
 
     ranked = sorted(list(tools), key=_rank)
     kept = ranked[:cap]
+    dropped = [str(getattr(t, "name", "") or "") for t in ranked[cap:]]
     logger.warning(
-        "Capped monday MCP tools from %d to %d to satisfy provider strict-tool limits",
+        "Capped monday MCP tools from %d to %d (cap=%d); dropped: %s",
         len(tools),
         len(kept),
+        cap,
+        ", ".join(d for d in dropped if d) or "(none)",
     )
     return kept
 
@@ -938,29 +983,36 @@ def _optional_param_count(tool_obj) -> int:
 
 
 def _cap_optional_params(tools: list, max_optional_params: int) -> list:
-    """Keep tool schemas under provider optional-parameter complexity budget."""
+    """Trim NON-essential tools to keep optional-parameter complexity under budget.
+
+    Essential tools (``_MONDAY_ESSENTIAL_TOOLS``) are ALWAYS kept regardless of the
+    budget, so this can never re-introduce the original "agent lost its discovery
+    tools" bug. The old version walked all tools, summed optional params, and broke
+    out of the loop once the budget was hit — a single heavy tool
+    (get_board_items_page, ~15 optional params) exhausted it and dropped every tool
+    after, including search / get_board_info / all_monday_api. Only runs when
+    explicitly enabled (budget > 0); disabled by default.
+    """
     budget = max(1, int(max_optional_params or 1))
     if not tools:
         return []
 
     kept: list = []
     used = 0
-    # Tools are already priority-sorted/capped before this step.
     for tool_obj in tools:
-        opt = _optional_param_count(tool_obj)
-        # Always allow a zero/low optional tool; for very first tool, keep at least one.
-        if kept and (used + opt) > budget:
+        name = str(getattr(tool_obj, "name", "") or "").strip()
+        if name in _MONDAY_ESSENTIAL_TOOLS:
+            kept.append(tool_obj)  # never spend budget on essentials
             continue
+        opt = _optional_param_count(tool_obj)
+        if (used + opt) > budget:
+            continue  # skip this one but keep scanning for smaller tools
         kept.append(tool_obj)
         used += opt
-        if used >= budget:
-            break
 
     if len(kept) < len(tools):
         logger.warning(
-            "Capped monday tool optional params from total %d to %d (budget=%d), tools kept=%d/%d",
-            sum(_optional_param_count(t) for t in tools),
-            sum(_optional_param_count(t) for t in kept),
+            "Capped monday tool optional params (budget=%d): kept %d/%d tools (essentials always retained)",
             budget,
             len(kept),
             len(tools),
@@ -1010,10 +1062,16 @@ def get_monday_mcp_tools_for_user(username: str) -> list:
         logger.warning("Failed to load Monday MCP tools after retries; reporting no tools this turn")
         return []
     tools = _ensure_sync_callable_tools(raw_tools)
+    # Drop UI-internal / agent-unsafe tools the server may advertise.
+    tools = [t for t in tools if str(getattr(t, "name", "")).strip() not in _MONDAY_TOOL_DENYLIST]
     if RAG_MONDAY_MCP_TOOL_ALLOWLIST:
         tools = [t for t in tools if str(getattr(t, "name", "")).strip() in RAG_MONDAY_MCP_TOOL_ALLOWLIST]
     tools = _cap_monday_tools(tools, RAG_MONDAY_MCP_MAX_TOOLS)
-    tools = _cap_optional_params(tools, RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS)
+    # Optional-param capping is OFF by default (budget 0). It used to silently
+    # evict the discovery tools (get_board_info/search/...), so it now runs only
+    # when explicitly configured > 0.
+    if RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS > 0:
+        tools = _cap_optional_params(tools, RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS)
     _tools_cache[key_digest] = (now, list(tools))
     return tools
 

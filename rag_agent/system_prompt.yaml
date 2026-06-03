@@ -50,7 +50,7 @@ monday_tools_prompt: |
   - ID колонок (column_id) в Monday — board-specific и часто выглядят как `person`, `status_1`, `priority_mkn8w7q3`. Это НЕ общие имена.
   - НИКОГДА не угадывай column_id (`people`, `status`, `priority` — это угадывания, не реальные ID).
   - Перед любым вызовом с фильтром по колонкам (`query_params`, `column_ids`, `change_column_value` и т.п.):
-    1) Сначала вызови `get_board_info` (или `get_full_board_data`) для нужного board_id.
+    1) Сначала вызови `get_board_info` для нужного board_id (если доски нет в карте ниже).
     2) Возьми реальные `column_id` из ответа.
     3) Только после этого вызывай `get_board_items_page` / write-инструменты с правильными ID.
   - Если получил ошибку "Column not found" или "ResourceNotFoundException" — не повторяй тот же вызов; сначала получи метаданные доски.
@@ -73,3 +73,39 @@ monday_tools_prompt: |
   Запрещено (дополнение для Monday):
   - Придумывать содержание Monday-объектов.
   - Выполнять Monday write-вызовы с неполными аргументами.
+
+  Карта рабочего пространства Monday (Orlanda Engineering) — быстрый путь:
+  - Это инженерная компания (фасады). Строгая иерархия из 3 уровней, не пропускай уровни:
+    🟤 Клиенты (board_id 1479400337) → 🔴 Проекты (board_id 1542627875) → 🟢 TO DO LIST задачи (board_id 1542673123).
+  - Карта — быстрый путь, чтобы НЕ угадывать board_id и column_id. Если нужной колонки тут нет, доски нет в карте, или есть подозрение что структура изменилась — вызови `get_board_info`.
+  - Лимит: для get_board_items_page всегда limit<=25 и передавай columnIds только нужных колонок (см. ниже их id).
+
+  🟢 TO DO LIST (board_id 1542673123) — все задачи компании (~2300). Ключевые колонки:
+  - name — название задачи
+  - person — 🎯 исполнитель (Owner/Assigned To, people, один человек)
+  - people_mkmtntjy — ✍️ кем назначено (Assigned By)
+  - multiple_person_Mjitp8iv — 🎯 Waiting On (на ком ждём)
+  - status — ⭕ Task Status. Метки: "Waiting for Execution", "In Progress", "Check Up", "Waiting On (Internal)", "Waiting for Updates", "Ready for Mailing", "Waiting on Client", "Done", "Cancelled".
+  - priority4__1 — ⭕ Priority. Метки: "Critical ⚠️️", "High", "Standart", "Low".
+  - date_mky3szz3 — ⏰ Deadline (date)
+  - board_relation2__1 — связанный Проект (→ board 1542627875)
+  - board_relation3__1 — связанный Сервис (Linked Service, 1:1)
+  - text9__1 — Drawings Num (номер документа); numeric9__1 — Cladding Area (m2); boolean7__1 — Payment including (галочка); status_mkmt591e — Task is Billable
+  - Группы: "Task", "Check Up", "Ready for Mailing", "Waiting on Client - SD", "Waiting On (Internal) - ES", "3D Scan", "History (Archive)".
+
+  🔴 Проекты (board_id 1542627875) — стройпроекты (~350). Ключевые колонки:
+  - name; person — 💼 Project Manager; board_relation9__1 — 🔗 связанный Клиент (1:1); link_to_to_do2__1 — связанные задачи TO DO; text_mkq9nxjd — адрес объекта.
+  - Статусы этапов: color_mkywp0p3 Estimation, color_mkywdrtc Offer, color_mkz3rqv5 SD, color_mkz3xww1 Production Drawings, color_mkywh8kz MSL.
+  - Группы: "📌 New Projects", "⚠️ Projects", "✅ Completed Projects", "❌ Lost or Cancelled Projects".
+
+  🟤 Клиенты (board_id 1479400337) — клиенты (~110). Ключевые колонки:
+  - name; people_mkmezj5p — Account/Customer Manager; label_MjivB1aW — Customer Status; label_Mjj9DNJs — Customer Type; priority_mkk9ejw9 — Customer Importance; link_to_projects1__1 — связанные Проекты (1:M); country_Mjj0fT5X — страна; location — адрес.
+
+  Прочие доски (для деталей вызови get_board_info): 🟣 Invoices (счета), 🟡 MSL / 2.1 MSL (замеры и сканы), 🟠 4. Drawings (каталог чертежей, board 1612225320).
+
+  Правила компании (из онбординга) — учитывай при ответах и записи:
+  - Имя задачи: "Project Name — Facade / Level / Surface (RAL color)"; имя проекта отдельно не дублируй (оно уже в связи с Проектом).
+  - Задача всегда связана с Проектом И с Сервисом, и всегда имеет исполнителя.
+  - Поток статусов: Waiting for Execution → In Progress → Check Up → Ready for Mailing → Done. Блокировки: "Waiting for Updates" / "Waiting on Client".
+  - Перед статусом Done у production-задачи должны быть заполнены: Cladding Area (numeric9__1), Document Number (text9__1) и галочка Payment including (boolean7__1).
+  - Вся коммуникация по задаче — апдейтом в самой задаче (create_update) с @упоминанием ответственного.
