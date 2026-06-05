@@ -221,6 +221,48 @@ def test_default_allowlist_yields_exactly_ten_tools():
         ma.RAG_MONDAY_MCP_TOOL_ALLOWLIST = saved
 
 
+def _fake_conn(expires_at=None, updated_at=None):
+    class _C:
+        pass
+    c = _C()
+    c.expires_at = expires_at
+    c.updated_at = updated_at
+    return c
+
+
+def test_token_needs_refresh_missing_token():
+    from rag_agent.monday_auth import _token_needs_refresh
+    assert _token_needs_refresh(_fake_conn(), "") is True
+
+
+def test_token_needs_refresh_none_expiry_old_updated():
+    from datetime import datetime, timezone, timedelta
+    from rag_agent.monday_auth import _token_needs_refresh, _TOKEN_MAX_AGE_SECONDS
+    old = datetime.now(timezone.utc) - timedelta(seconds=_TOKEN_MAX_AGE_SECONDS + 120)
+    assert _token_needs_refresh(_fake_conn(expires_at=None, updated_at=old), "tok") is True
+
+
+def test_token_needs_refresh_none_expiry_fresh_updated():
+    from datetime import datetime, timezone, timedelta
+    from rag_agent.monday_auth import _token_needs_refresh
+    fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+    assert _token_needs_refresh(_fake_conn(expires_at=None, updated_at=fresh), "tok") is False
+
+
+def test_token_needs_refresh_future_expiry_is_false():
+    from datetime import datetime, timezone, timedelta
+    from rag_agent.monday_auth import _token_needs_refresh, _TOKEN_REFRESH_LEEWAY_SECONDS
+    future = datetime.now(timezone.utc) + timedelta(seconds=_TOKEN_REFRESH_LEEWAY_SECONDS + 600)
+    assert _token_needs_refresh(_fake_conn(expires_at=future), "tok") is False
+
+
+def test_token_needs_refresh_near_expiry_is_true():
+    from datetime import datetime, timezone, timedelta
+    from rag_agent.monday_auth import _token_needs_refresh, _TOKEN_REFRESH_LEEWAY_SECONDS
+    soon = datetime.now(timezone.utc) + timedelta(seconds=_TOKEN_REFRESH_LEEWAY_SECONDS - 5)
+    assert _token_needs_refresh(_fake_conn(expires_at=soon), "tok") is True
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

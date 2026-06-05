@@ -41,6 +41,8 @@ from rag_agent.config import (
     RAG_MONDAY_OAUTH_SCOPES,
     RAG_MONDAY_OAUTH_STATE_TTL_SECONDS,
     RAG_MONDAY_OAUTH_TOKEN_URL,
+    RAG_MONDAY_TOKEN_MAX_AGE_SECONDS,
+    RAG_MONDAY_TOKEN_REFRESH_LEEWAY_SECONDS,
 )
 from rag_agent.db.models import MondayConnectionState, MondayUserConnection, User
 from rag_agent.db.session import get_engine, get_session_factory
@@ -416,8 +418,11 @@ def disconnect_monday(username: str) -> None:
 
 
 # Seconds before `expires_at` at which we proactively refresh the access token,
-# so an in-flight chat turn never starts with a token about to expire.
-_TOKEN_REFRESH_LEEWAY_SECONDS = 60
+# so an in-flight chat turn never starts with a token about to expire. Widened
+# from 60s and made configurable so even a long multi-step turn refreshes first.
+_TOKEN_REFRESH_LEEWAY_SECONDS = RAG_MONDAY_TOKEN_REFRESH_LEEWAY_SECONDS
+# Fallback freshness window when Monday omits `expires_in` (no `expires_at`).
+_TOKEN_MAX_AGE_SECONDS = RAG_MONDAY_TOKEN_MAX_AGE_SECONDS
 
 # Per-user locks to avoid a refresh stampede when concurrent requests for the same
 # user all observe an expired token at once. Keyed by lowercased username.
@@ -436,11 +441,16 @@ def _refresh_lock_for(username: str) -> threading.Lock:
 
 
 def _token_needs_refresh(conn: MondayUserConnection, token: str) -> bool:
-    """True when the stored access token is missing or within the refresh leeway."""
+    """True when the stored access token is missing, near expiry, or (when expiry
+    is unknown) older than the max-age fallback so it still rotates."""
     if not token:
         return True
     if conn.expires_at is None:
-        return False
+        # Monday may omit `expires_in`; don't treat the token as eternal.
+        updated = getattr(conn, "updated_at", None)
+        if updated is None:
+            return True
+        return updated <= (_utcnow() - timedelta(seconds=_TOKEN_MAX_AGE_SECONDS))
     return conn.expires_at <= (_utcnow() + timedelta(seconds=_TOKEN_REFRESH_LEEWAY_SECONDS))
 
 
