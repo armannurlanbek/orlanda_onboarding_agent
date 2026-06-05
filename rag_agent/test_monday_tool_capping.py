@@ -205,6 +205,22 @@ def test_allowlist_parser_explicit_list():
             _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = saved
 
 
+def test_default_allowlist_yields_exactly_ten_tools():
+    import rag_agent.monday_auth as ma
+    from rag_agent.config import RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST
+    saved = ma.RAG_MONDAY_MCP_TOOL_ALLOWLIST
+    ma.RAG_MONDAY_MCP_TOOL_ALLOWLIST = set(RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST)
+    try:
+        tools = [_FakeTool(n) for n in _REAL_MONDAY_TOOLNAMES]
+        kept = _names(ma._prepare_monday_tools(tools))
+        assert kept == set(RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST)
+        for dropped in ("all_monday_api", "list_workspaces", "workspace_info",
+                        "create_board", "get_full_board_data"):
+            assert dropped not in kept
+    finally:
+        ma.RAG_MONDAY_MCP_TOOL_ALLOWLIST = saved
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
