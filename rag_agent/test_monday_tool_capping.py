@@ -303,11 +303,14 @@ class _FakeAsyncTool:
 
 
 def test_session_tools_are_coroutine_only():
+    import asyncio
     from rag_agent.monday_auth import _ensure_sync_callable_tools
     wrapped = _ensure_sync_callable_tools([_FakeAsyncTool("get_board_info")], for_session=True)
     assert len(wrapped) == 1
     assert wrapped[0].coroutine is not None
     assert wrapped[0].func is None
+    # Behavioral: the async path actually routes through to the underlying tool.
+    assert asyncio.run(wrapped[0].ainvoke({})) == "ok"
 
 
 def test_per_call_tools_keep_sync_func():

@@ -820,7 +820,11 @@ def _ensure_sync_callable_tools(tools: list, *, for_session: bool = False) -> li
                 missing=missing,
             )
 
-        if callable(func):
+        # Session-bound tools must never get a sync wrapper (loop affinity). The
+        # _make_sync_runner path below is the actual loop hazard; skipping the
+        # sync-func branch when for_session keeps the coroutine-only guarantee
+        # unconditional even if a session tool ever arrived with its own sync func.
+        if callable(func) and not for_session:
             def _safe_sync_func(**kwargs):
                 missing_res = _guard_and_format_missing(kwargs)
                 if missing_res:
