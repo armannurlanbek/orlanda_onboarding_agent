@@ -221,6 +221,26 @@ def test_default_allowlist_yields_exactly_ten_tools():
         ma.RAG_MONDAY_MCP_TOOL_ALLOWLIST = saved
 
 
+def test_permanent_refresh_failure_invalid_grant():
+    from rag_agent.monday_auth import _is_permanent_refresh_failure
+    assert _is_permanent_refresh_failure(error="invalid_grant") is True
+
+
+def test_permanent_refresh_failure_http_400():
+    from rag_agent.monday_auth import _is_permanent_refresh_failure
+    assert _is_permanent_refresh_failure(http_code=400) is True
+
+
+def test_transient_refresh_failure_http_503():
+    from rag_agent.monday_auth import _is_permanent_refresh_failure
+    assert _is_permanent_refresh_failure(http_code=503) is False
+
+
+def test_transient_refresh_failure_network():
+    from rag_agent.monday_auth import _is_permanent_refresh_failure
+    assert _is_permanent_refresh_failure() is False
+
+
 def _fake_conn(expires_at=None, updated_at=None):
     class _C:
         pass
