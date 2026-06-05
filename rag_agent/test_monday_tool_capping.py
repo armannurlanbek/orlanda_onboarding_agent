@@ -320,6 +320,25 @@ def test_per_call_tools_keep_sync_func():
     assert wrapped[0].func is not None
 
 
+def test_auth_expired_error_returns_reconnect_hint():
+    import json
+    from rag_agent.monday_auth import _format_tool_error_for_model
+    out = _format_tool_error_for_model(
+        "get_board_info", RuntimeError("HTTP 401 Unauthorized: the token has expired")
+    )
+    data = json.loads(out)
+    assert data["ok"] is False
+    assert "reconnect" in data["message"].lower()
+
+
+def test_column_error_still_returns_board_info_hint():
+    import json
+    from rag_agent.monday_auth import _format_tool_error_for_model
+    out = _format_tool_error_for_model("get_board_items_page", RuntimeError("Column not found: status"))
+    data = json.loads(out)
+    assert "get_board_info" in data["message"]
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

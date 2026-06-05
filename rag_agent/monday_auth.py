@@ -106,7 +106,22 @@ def _format_tool_error_for_model(tool_name: str, err: BaseException) -> str:
     txt = str(err or "")
     lower = txt.lower()
     hint = ""
-    if "column not found" in lower or "missing_column" in lower:
+    auth_expired_markers = (
+        "token has expired",
+        "token expired",
+        "expired access token",
+        "invalid token",
+        "unauthenticated",
+        "authentication failed",
+        "http 401",
+        "401 unauthorized",
+    )
+    if any(m in lower for m in auth_expired_markers):
+        hint = (
+            "Your Monday session expired or is invalid. Tell the user to reconnect "
+            "Monday in Settings; do not retry this tool until they reconnect."
+        )
+    elif "column not found" in lower or "missing_column" in lower:
         hint = (
             "Column id was wrong. Call `get_board_info` first to fetch the real "
             "column ids for this board, then retry with the correct id."
