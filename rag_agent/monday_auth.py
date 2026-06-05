@@ -355,17 +355,27 @@ def complete_monday_oauth_callback(
             raise RuntimeError("RAG_MONDAY_OAUTH_CLIENT_ID is required")
         if not RAG_MONDAY_OAUTH_CLIENT_SECRET:
             raise RuntimeError("RAG_MONDAY_OAUTH_CLIENT_SECRET is required")
-        token_response = _post_form(
-            RAG_MONDAY_OAUTH_TOKEN_URL,
-            {
-                "grant_type": "authorization_code",
-                "client_id": RAG_MONDAY_OAUTH_CLIENT_ID,
-                "client_secret": RAG_MONDAY_OAUTH_CLIENT_SECRET,
-                "code": code,
-                "redirect_uri": row.redirect_uri or RAG_MONDAY_OAUTH_REDIRECT_URI,
-                "code_verifier": row.code_verifier,
-            },
-        )
+        try:
+            token_response = _post_form(
+                RAG_MONDAY_OAUTH_TOKEN_URL,
+                {
+                    "grant_type": "authorization_code",
+                    "client_id": RAG_MONDAY_OAUTH_CLIENT_ID,
+                    "client_secret": RAG_MONDAY_OAUTH_CLIENT_SECRET,
+                    "code": code,
+                    "redirect_uri": row.redirect_uri or RAG_MONDAY_OAUTH_REDIRECT_URI,
+                    "code_verifier": row.code_verifier,
+                },
+            )
+        except urllib_error.HTTPError as exc:
+            raise RuntimeError(
+                f"Monday rejected the authorization (HTTP {getattr(exc, 'code', '?')}). "
+                "Please try connecting Monday again."
+            ) from exc
+        except (urllib_error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(
+                "Could not reach Monday to complete authorization. Please try again."
+            ) from exc
 
         access_token = str(token_response.get("access_token") or "").strip()
         if not access_token:
