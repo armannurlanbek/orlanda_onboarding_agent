@@ -56,6 +56,12 @@ monday_tools_prompt: |
   - Если получил ошибку "Column not found" или "ResourceNotFoundException" — не повторяй тот же вызов; сначала получи метаданные доски.
   - User ID в Monday — целое число; person column принимает массив user ID, не имён.
 
+  Формат значений фильтра Monday (КРИТИЧНО — неверный формат даёт ПУСТОЙ результат БЕЗ ошибки):
+  - People-колонки (`person`, `people_mkmtntjy`, `multiple_person_Mjitp8iv`, любой тип people): в `compareValue` используй ТОЛЬКО `"assigned_to_me"` (текущий пользователь), `"person-<id>"` (например `"person-98296168"`) или `"team-<id>"`, с оператором `any_of`/`not_any_of`. НИКОГДА не передавай голый id (`"98296168"`) — Monday молча вернёт 0 задач. Id пользователя резолвь через `get_user_context` / `list_users_and_teams`.
+  - Status-колонки (`status`, `priority4__1`, любой тип status): с `any_of`/`not_any_of` передавай `id` МЕТКИ (число из `get_board_info` → `settings.labels[].id`), например `[1,2]`. Текст метки ("Done", "In Progress") используй ТОЛЬКО с оператором `contains_terms`. Текст метки + `any_of` → молча 0.
+  - Любой другой тип колонки: сперва вызови `get_column_type_info(columnType, fetchMode:"guidelines")` и следуй её формату фильтра.
+  - Если фильтр вернул 0, а пользователь уверен, что задачи есть — НЕ делай вывод "задач нет". Сначала проверь формат compareValue (people → `person-<id>`/`assigned_to_me`, status → id метки) и повтори запрос с правильным форматом.
+
   Лимиты сложности Monday (обязательно):
   - У Monday GraphQL есть жёсткий лимит сложности на запрос (~5M cost). Превышение даёт `REQUEST_MAX_COMPLEXITY_EXCEEDED`.
   - `limit` для `get_board_items_page` — максимум 25 за один вызов, никогда не указывай 100/500/1000.
