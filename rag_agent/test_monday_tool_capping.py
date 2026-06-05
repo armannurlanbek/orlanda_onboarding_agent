@@ -339,6 +339,83 @@ def test_column_error_still_returns_board_info_hint():
     assert "get_board_info" in data["message"]
 
 
+class _FakeRefreshConn:
+    def __init__(self):
+        self.revoked_at = None
+        self.updated_at = None
+        self.access_token_encrypted = "enc-access"
+        self.refresh_token_encrypted = "enc-refresh"
+        self.scope = None
+        self.token_type = "Bearer"
+
+
+class _FakeRefreshDB:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def scalar(self, *a, **k):
+        return self._conn
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def _run_refresh_with_post_form(post_form):
+    """Drive _refresh_access_token_for_user with a stubbed token endpoint, returning
+    the fake connection so the caller can assert on revoked_at. End-to-end wiring
+    test for classifier -> _revoke_connection -> DB (spec Test #3)."""
+    import rag_agent.monday_auth as ma
+    conn = _FakeRefreshConn()
+    saved = {
+        "cid": ma.RAG_MONDAY_OAUTH_CLIENT_ID,
+        "secret": ma.RAG_MONDAY_OAUTH_CLIENT_SECRET,
+        "gsf": ma.get_session_factory,
+        "ru": ma._resolve_user,
+        "dt": ma._decrypt_token,
+        "pf": ma._post_form,
+    }
+    try:
+        ma.RAG_MONDAY_OAUTH_CLIENT_ID = "cid"
+        ma.RAG_MONDAY_OAUTH_CLIENT_SECRET = "secret"
+        ma.get_session_factory = lambda: (lambda: _FakeRefreshDB(conn))
+        ma._resolve_user = lambda db, username: type("_U", (), {"id": 1})()
+        # "" access (=> needs refresh via missing token), truthy refresh token.
+        ma._decrypt_token = lambda v: "refresh-token" if v == "enc-refresh" else ""
+        ma._post_form = post_form
+        result = ma._refresh_access_token_for_user("u")
+        return conn, result
+    finally:
+        ma.RAG_MONDAY_OAUTH_CLIENT_ID = saved["cid"]
+        ma.RAG_MONDAY_OAUTH_CLIENT_SECRET = saved["secret"]
+        ma.get_session_factory = saved["gsf"]
+        ma._resolve_user = saved["ru"]
+        ma._decrypt_token = saved["dt"]
+        ma._post_form = saved["pf"]
+
+
+def test_refresh_revokes_connection_on_invalid_grant():
+    conn, result = _run_refresh_with_post_form(lambda url, payload: {"error": "invalid_grant"})
+    assert result == ""
+    assert conn.revoked_at is not None
+
+
+def test_refresh_does_not_revoke_on_network_error():
+    from urllib import error as urllib_error
+
+    def _boom(url, payload):
+        raise urllib_error.URLError("connection reset")
+
+    conn, result = _run_refresh_with_post_form(_boom)
+    assert result == ""
+    assert conn.revoked_at is None
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
