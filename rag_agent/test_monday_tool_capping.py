@@ -163,6 +163,259 @@ def test_heavy_tool_optional_param_count_is_large():
     assert _count_optional_props_in_schema(get_board_items_page_schema) >= 12
 
 
+import os as _os
+
+
+def test_allowlist_parser_default_when_unset():
+    from rag_agent.config import _parse_monday_tool_allowlist, RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST
+    saved = _os.environ.pop("RAG_MONDAY_MCP_TOOL_ALLOWLIST", None)
+    try:
+        assert _parse_monday_tool_allowlist() == set(RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST)
+        assert len(RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST) == 10
+    finally:
+        if saved is not None:
+            _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = saved
+
+
+def test_allowlist_parser_star_disables():
+    from rag_agent.config import _parse_monday_tool_allowlist
+    saved = _os.environ.get("RAG_MONDAY_MCP_TOOL_ALLOWLIST")
+    _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = "*"
+    try:
+        assert _parse_monday_tool_allowlist() == set()
+        _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = "ALL"
+        assert _parse_monday_tool_allowlist() == set()
+    finally:
+        if saved is None:
+            _os.environ.pop("RAG_MONDAY_MCP_TOOL_ALLOWLIST", None)
+        else:
+            _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = saved
+
+
+def test_allowlist_parser_explicit_list():
+    from rag_agent.config import _parse_monday_tool_allowlist
+    saved = _os.environ.get("RAG_MONDAY_MCP_TOOL_ALLOWLIST")
+    _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = "search, get_board_info"
+    try:
+        assert _parse_monday_tool_allowlist() == {"search", "get_board_info"}
+    finally:
+        if saved is None:
+            _os.environ.pop("RAG_MONDAY_MCP_TOOL_ALLOWLIST", None)
+        else:
+            _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = saved
+
+
+def test_default_allowlist_yields_exactly_ten_tools():
+    import rag_agent.monday_auth as ma
+    from rag_agent.config import RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST
+    saved = ma.RAG_MONDAY_MCP_TOOL_ALLOWLIST
+    ma.RAG_MONDAY_MCP_TOOL_ALLOWLIST = set(RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST)
+    try:
+        tools = [_FakeTool(n) for n in _REAL_MONDAY_TOOLNAMES]
+        kept = _names(ma._prepare_monday_tools(tools))
+        assert kept == set(RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST)
+        for dropped in ("all_monday_api", "list_workspaces", "workspace_info",
+                        "create_board", "get_full_board_data"):
+            assert dropped not in kept
+    finally:
+        ma.RAG_MONDAY_MCP_TOOL_ALLOWLIST = saved
+
+
+def test_permanent_refresh_failure_invalid_grant():
+    from rag_agent.monday_auth import _is_permanent_refresh_failure
+    assert _is_permanent_refresh_failure(error="invalid_grant") is True
+
+
+def test_permanent_refresh_failure_http_400():
+    from rag_agent.monday_auth import _is_permanent_refresh_failure
+    assert _is_permanent_refresh_failure(http_code=400) is True
+
+
+def test_transient_refresh_failure_http_503():
+    from rag_agent.monday_auth import _is_permanent_refresh_failure
+    assert _is_permanent_refresh_failure(http_code=503) is False
+
+
+def test_transient_refresh_failure_network():
+    from rag_agent.monday_auth import _is_permanent_refresh_failure
+    assert _is_permanent_refresh_failure() is False
+
+
+def test_rate_limited_refresh_is_transient():
+    # HTTP 429 is in the 4xx range but is rate-limiting, NOT a dead grant.
+    from rag_agent.monday_auth import _is_permanent_refresh_failure
+    assert _is_permanent_refresh_failure(http_code=429) is False
+
+
+def _fake_conn(expires_at=None, updated_at=None):
+    class _C:
+        pass
+    c = _C()
+    c.expires_at = expires_at
+    c.updated_at = updated_at
+    return c
+
+
+def test_token_needs_refresh_missing_token():
+    from rag_agent.monday_auth import _token_needs_refresh
+    assert _token_needs_refresh(_fake_conn(), "") is True
+
+
+def test_token_needs_refresh_none_expiry_old_updated():
+    from datetime import datetime, timezone, timedelta
+    from rag_agent.monday_auth import _token_needs_refresh, _TOKEN_MAX_AGE_SECONDS
+    old = datetime.now(timezone.utc) - timedelta(seconds=_TOKEN_MAX_AGE_SECONDS + 120)
+    assert _token_needs_refresh(_fake_conn(expires_at=None, updated_at=old), "tok") is True
+
+
+def test_token_needs_refresh_none_expiry_fresh_updated():
+    from datetime import datetime, timezone, timedelta
+    from rag_agent.monday_auth import _token_needs_refresh
+    fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+    assert _token_needs_refresh(_fake_conn(expires_at=None, updated_at=fresh), "tok") is False
+
+
+def test_token_needs_refresh_future_expiry_is_false():
+    from datetime import datetime, timezone, timedelta
+    from rag_agent.monday_auth import _token_needs_refresh, _TOKEN_REFRESH_LEEWAY_SECONDS
+    future = datetime.now(timezone.utc) + timedelta(seconds=_TOKEN_REFRESH_LEEWAY_SECONDS + 600)
+    assert _token_needs_refresh(_fake_conn(expires_at=future), "tok") is False
+
+
+def test_token_needs_refresh_near_expiry_is_true():
+    from datetime import datetime, timezone, timedelta
+    from rag_agent.monday_auth import _token_needs_refresh, _TOKEN_REFRESH_LEEWAY_SECONDS
+    soon = datetime.now(timezone.utc) + timedelta(seconds=_TOKEN_REFRESH_LEEWAY_SECONDS - 5)
+    assert _token_needs_refresh(_fake_conn(expires_at=soon), "tok") is True
+
+
+class _FakeAsyncTool:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.description = "desc"
+        self.args_schema = None
+        self.func = None
+
+        async def _coro(**kwargs):
+            return "ok"
+
+        self.coroutine = _coro
+
+
+def test_session_tools_are_coroutine_only():
+    import asyncio
+    from rag_agent.monday_auth import _ensure_sync_callable_tools
+    wrapped = _ensure_sync_callable_tools([_FakeAsyncTool("get_board_info")], for_session=True)
+    assert len(wrapped) == 1
+    assert wrapped[0].coroutine is not None
+    assert wrapped[0].func is None
+    # Behavioral: the async path actually routes through to the underlying tool.
+    assert asyncio.run(wrapped[0].ainvoke({})) == "ok"
+
+
+def test_per_call_tools_keep_sync_func():
+    from rag_agent.monday_auth import _ensure_sync_callable_tools
+    wrapped = _ensure_sync_callable_tools([_FakeAsyncTool("get_board_info")], for_session=False)
+    assert len(wrapped) == 1
+    assert wrapped[0].func is not None
+
+
+def test_auth_expired_error_returns_reconnect_hint():
+    import json
+    from rag_agent.monday_auth import _format_tool_error_for_model
+    out = _format_tool_error_for_model(
+        "get_board_info", RuntimeError("HTTP 401 Unauthorized: the token has expired")
+    )
+    data = json.loads(out)
+    assert data["ok"] is False
+    assert "reconnect" in data["message"].lower()
+
+
+def test_column_error_still_returns_board_info_hint():
+    import json
+    from rag_agent.monday_auth import _format_tool_error_for_model
+    out = _format_tool_error_for_model("get_board_items_page", RuntimeError("Column not found: status"))
+    data = json.loads(out)
+    assert "get_board_info" in data["message"]
+
+
+class _FakeRefreshConn:
+    def __init__(self):
+        self.revoked_at = None
+        self.updated_at = None
+        self.access_token_encrypted = "enc-access"
+        self.refresh_token_encrypted = "enc-refresh"
+        self.scope = None
+        self.token_type = "Bearer"
+
+
+class _FakeRefreshDB:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def scalar(self, *a, **k):
+        return self._conn
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def _run_refresh_with_post_form(post_form):
+    """Drive _refresh_access_token_for_user with a stubbed token endpoint, returning
+    the fake connection so the caller can assert on revoked_at. End-to-end wiring
+    test for classifier -> _revoke_connection -> DB (spec Test #3)."""
+    import rag_agent.monday_auth as ma
+    conn = _FakeRefreshConn()
+    saved = {
+        "cid": ma.RAG_MONDAY_OAUTH_CLIENT_ID,
+        "secret": ma.RAG_MONDAY_OAUTH_CLIENT_SECRET,
+        "gsf": ma.get_session_factory,
+        "ru": ma._resolve_user,
+        "dt": ma._decrypt_token,
+        "pf": ma._post_form,
+    }
+    try:
+        ma.RAG_MONDAY_OAUTH_CLIENT_ID = "cid"
+        ma.RAG_MONDAY_OAUTH_CLIENT_SECRET = "secret"
+        ma.get_session_factory = lambda: (lambda: _FakeRefreshDB(conn))
+        ma._resolve_user = lambda db, username: type("_U", (), {"id": 1})()
+        # "" access (=> needs refresh via missing token), truthy refresh token.
+        ma._decrypt_token = lambda v: "refresh-token" if v == "enc-refresh" else ""
+        ma._post_form = post_form
+        result = ma._refresh_access_token_for_user("u")
+        return conn, result
+    finally:
+        ma.RAG_MONDAY_OAUTH_CLIENT_ID = saved["cid"]
+        ma.RAG_MONDAY_OAUTH_CLIENT_SECRET = saved["secret"]
+        ma.get_session_factory = saved["gsf"]
+        ma._resolve_user = saved["ru"]
+        ma._decrypt_token = saved["dt"]
+        ma._post_form = saved["pf"]
+
+
+def test_refresh_revokes_connection_on_invalid_grant():
+    conn, result = _run_refresh_with_post_form(lambda url, payload: {"error": "invalid_grant"})
+    assert result == ""
+    assert conn.revoked_at is not None
+
+
+def test_refresh_does_not_revoke_on_network_error():
+    from urllib import error as urllib_error
+
+    def _boom(url, payload):
+        raise urllib_error.URLError("connection reset")
+
+    conn, result = _run_refresh_with_post_form(_boom)
+    assert result == ""
+    assert conn.revoked_at is None
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

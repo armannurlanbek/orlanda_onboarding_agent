@@ -41,6 +41,8 @@ from rag_agent.config import (
     RAG_MONDAY_OAUTH_SCOPES,
     RAG_MONDAY_OAUTH_STATE_TTL_SECONDS,
     RAG_MONDAY_OAUTH_TOKEN_URL,
+    RAG_MONDAY_TOKEN_MAX_AGE_SECONDS,
+    RAG_MONDAY_TOKEN_REFRESH_LEEWAY_SECONDS,
 )
 from rag_agent.db.models import MondayConnectionState, MondayUserConnection, User
 from rag_agent.db.session import get_engine, get_session_factory
@@ -104,7 +106,22 @@ def _format_tool_error_for_model(tool_name: str, err: BaseException) -> str:
     txt = str(err or "")
     lower = txt.lower()
     hint = ""
-    if "column not found" in lower or "missing_column" in lower:
+    auth_expired_markers = (
+        "token has expired",
+        "token expired",
+        "expired access token",
+        "invalid token",
+        "unauthenticated",
+        "authentication failed",
+        "http 401",
+        "401 unauthorized",
+    )
+    if any(m in lower for m in auth_expired_markers):
+        hint = (
+            "Your Monday session expired or is invalid. Tell the user to reconnect "
+            "Monday in Settings; do not retry this tool until they reconnect."
+        )
+    elif "column not found" in lower or "missing_column" in lower:
         hint = (
             "Column id was wrong. Call `get_board_info` first to fetch the real "
             "column ids for this board, then retry with the correct id."
@@ -353,17 +370,27 @@ def complete_monday_oauth_callback(
             raise RuntimeError("RAG_MONDAY_OAUTH_CLIENT_ID is required")
         if not RAG_MONDAY_OAUTH_CLIENT_SECRET:
             raise RuntimeError("RAG_MONDAY_OAUTH_CLIENT_SECRET is required")
-        token_response = _post_form(
-            RAG_MONDAY_OAUTH_TOKEN_URL,
-            {
-                "grant_type": "authorization_code",
-                "client_id": RAG_MONDAY_OAUTH_CLIENT_ID,
-                "client_secret": RAG_MONDAY_OAUTH_CLIENT_SECRET,
-                "code": code,
-                "redirect_uri": row.redirect_uri or RAG_MONDAY_OAUTH_REDIRECT_URI,
-                "code_verifier": row.code_verifier,
-            },
-        )
+        try:
+            token_response = _post_form(
+                RAG_MONDAY_OAUTH_TOKEN_URL,
+                {
+                    "grant_type": "authorization_code",
+                    "client_id": RAG_MONDAY_OAUTH_CLIENT_ID,
+                    "client_secret": RAG_MONDAY_OAUTH_CLIENT_SECRET,
+                    "code": code,
+                    "redirect_uri": row.redirect_uri or RAG_MONDAY_OAUTH_REDIRECT_URI,
+                    "code_verifier": row.code_verifier,
+                },
+            )
+        except urllib_error.HTTPError as exc:
+            raise RuntimeError(
+                f"Monday rejected the authorization (HTTP {getattr(exc, 'code', '?')}). "
+                "Please try connecting Monday again."
+            ) from exc
+        except (urllib_error.URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError(
+                "Could not reach Monday to complete authorization. Please try again."
+            ) from exc
 
         access_token = str(token_response.get("access_token") or "").strip()
         if not access_token:
@@ -416,8 +443,11 @@ def disconnect_monday(username: str) -> None:
 
 
 # Seconds before `expires_at` at which we proactively refresh the access token,
-# so an in-flight chat turn never starts with a token about to expire.
-_TOKEN_REFRESH_LEEWAY_SECONDS = 60
+# so an in-flight chat turn never starts with a token about to expire. Widened
+# from 60s and made configurable so even a long multi-step turn refreshes first.
+_TOKEN_REFRESH_LEEWAY_SECONDS = RAG_MONDAY_TOKEN_REFRESH_LEEWAY_SECONDS
+# Fallback freshness window when Monday omits `expires_in` (no `expires_at`).
+_TOKEN_MAX_AGE_SECONDS = RAG_MONDAY_TOKEN_MAX_AGE_SECONDS
 
 # Per-user locks to avoid a refresh stampede when concurrent requests for the same
 # user all observe an expired token at once. Keyed by lowercased username.
@@ -436,12 +466,57 @@ def _refresh_lock_for(username: str) -> threading.Lock:
 
 
 def _token_needs_refresh(conn: MondayUserConnection, token: str) -> bool:
-    """True when the stored access token is missing or within the refresh leeway."""
+    """True when the stored access token is missing, near expiry, or (when expiry
+    is unknown) older than the max-age fallback so it still rotates."""
     if not token:
         return True
     if conn.expires_at is None:
-        return False
+        # Monday may omit `expires_in`; don't treat the token as eternal.
+        updated = getattr(conn, "updated_at", None)
+        if updated is None:
+            return True
+        return updated <= (_utcnow() - timedelta(seconds=_TOKEN_MAX_AGE_SECONDS))
     return conn.expires_at <= (_utcnow() + timedelta(seconds=_TOKEN_REFRESH_LEEWAY_SECONDS))
+
+
+# OAuth token-endpoint errors that mean the refresh token itself is permanently
+# bad (user must reconnect). Distinct from transient 5xx / network blips.
+_PERMANENT_OAUTH_ERRORS = frozenset({
+    "invalid_grant",
+    "invalid_client",
+    "unauthorized_client",
+    "unsupported_grant_type",
+    "invalid_scope",
+})
+
+
+def _is_permanent_refresh_failure(*, http_code: int | None = None, error: str | None = None) -> bool:
+    """True when a refresh failure means the grant is dead (revoke + reconnect).
+
+    A 4xx from the token endpoint (except 429 rate-limiting), or a structured
+    OAuth error like ``invalid_grant``, is permanent. 5xx / 429 / network errors
+    are transient and must NOT disconnect the user.
+    """
+    if isinstance(http_code, int) and 400 <= http_code < 500 and http_code != 429:
+        return True
+    if str(error or "").strip().lower() in _PERMANENT_OAUTH_ERRORS:
+        return True
+    return False
+
+
+def _revoke_connection(db, conn) -> None:
+    """Mark a Monday connection revoked (user must reconnect). Isolated so a
+    failed revoke write logs distinctly and never masquerades as a token error."""
+    try:
+        conn.revoked_at = _utcnow()
+        conn.updated_at = _utcnow()
+        db.commit()
+    except Exception:
+        logger.warning("Monday connection revoke write failed")
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 def _refresh_access_token_for_user(username: str) -> str:
@@ -491,7 +566,10 @@ def _refresh_access_token_for_user(username: str) -> str:
                     },
                 )
             except urllib_error.HTTPError as exc:
-                logger.warning("Monday token refresh failed: HTTP %s", getattr(exc, "code", "?"))
+                code = getattr(exc, "code", None)
+                logger.warning("Monday token refresh failed: HTTP %s", code if code is not None else "?")
+                if _is_permanent_refresh_failure(http_code=code):
+                    _revoke_connection(db, conn)
                 return ""
             except (urllib_error.URLError, TimeoutError, OSError) as exc:
                 logger.warning("Monday token refresh failed: network error (%s)", type(exc).__name__)
@@ -504,6 +582,8 @@ def _refresh_access_token_for_user(username: str) -> str:
             if not new_access:
                 err = str(token_response.get("error") or "no access_token in response")
                 logger.warning("Monday token refresh failed: %s", err)
+                if _is_permanent_refresh_failure(error=token_response.get("error")):
+                    _revoke_connection(db, conn)
                 return ""
 
             # Monday may or may not rotate the refresh token; keep the old one if absent.
@@ -736,7 +816,7 @@ def _load_tools_with_retry(make_get_tools_coro):
     return []
 
 
-def _ensure_sync_callable_tools(tools: list) -> list:
+def _ensure_sync_callable_tools(tools: list, *, for_session: bool = False) -> list:
     wrapped: list = []
     for tool in tools:
         name = str(getattr(tool, "name", "")).strip()
@@ -755,7 +835,11 @@ def _ensure_sync_callable_tools(tools: list) -> list:
                 missing=missing,
             )
 
-        if callable(func):
+        # Session-bound tools must never get a sync wrapper (loop affinity). The
+        # _make_sync_runner path below is the actual loop hazard; skipping the
+        # sync-func branch when for_session keeps the coroutine-only guarantee
+        # unconditional even if a session tool ever arrived with its own sync func.
+        if callable(func) and not for_session:
             def _safe_sync_func(**kwargs):
                 missing_res = _guard_and_format_missing(kwargs)
                 if missing_res:
@@ -833,6 +917,21 @@ def _ensure_sync_callable_tools(tools: list) -> list:
                 return await _safe_coroutine_runner(coro_tool, tool_name, schema, **kwargs)
 
             return _runner
+
+        if for_session:
+            # Session-bound tools share ONE loop-bound ClientSession for the turn.
+            # Build coroutine-only so they can never be driven from a foreign loop
+            # (a sync .invoke() would otherwise bridge onto a background loop and
+            # terminate the session). A stray sync call now fails loudly instead.
+            wrapped.append(
+                StructuredTool.from_function(
+                    name=name or "monday_tool",
+                    description=description or f"MCP tool: {name or 'monday_tool'}",
+                    args_schema=args_schema,
+                    coroutine=_make_safe_coroutine(coroutine, name or "monday_tool", args_schema),
+                )
+            )
+            continue
 
         wrapped.append(
             StructuredTool.from_function(
@@ -1041,13 +1140,13 @@ def _build_monday_mcp_client(token: str):
     )
 
 
-def _prepare_monday_tools(raw_tools: list) -> list:
+def _prepare_monday_tools(raw_tools: list, *, for_session: bool = False) -> list:
     """Wrap + filter + cap raw MCP tools identically for every load path.
 
     Shared by the per-call loader and the persistent-session loader so both apply
     the same guards, denylist, allowlist and essential-tool-preserving caps.
     """
-    tools = _ensure_sync_callable_tools(raw_tools)
+    tools = _ensure_sync_callable_tools(raw_tools, for_session=for_session)
     # Drop UI-internal / agent-unsafe tools the server may advertise.
     tools = [t for t in tools if str(getattr(t, "name", "")).strip() not in _MONDAY_TOOL_DENYLIST]
     if RAG_MONDAY_MCP_TOOL_ALLOWLIST:
@@ -1135,7 +1234,7 @@ async def monday_session_tools(username: str, *, enabled: bool = True):
         session_cm = client.session("monday")
         session = await session_cm.__aenter__()
         raw_tools = await load_mcp_tools(session)
-        tools = _prepare_monday_tools(raw_tools)
+        tools = _prepare_monday_tools(raw_tools, for_session=True)
     except Exception:
         # Setup failed: tear down any partial session, fall back to per-call tools.
         if session_cm is not None:
