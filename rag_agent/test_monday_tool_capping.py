@@ -183,6 +183,8 @@ def test_allowlist_parser_star_disables():
     _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = "*"
     try:
         assert _parse_monday_tool_allowlist() == set()
+        _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = "ALL"
+        assert _parse_monday_tool_allowlist() == set()
     finally:
         if saved is None:
             _os.environ.pop("RAG_MONDAY_MCP_TOOL_ALLOWLIST", None)

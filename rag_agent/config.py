@@ -135,7 +135,7 @@ RAG_MONDAY_TOKEN_REFRESH_LEEWAY_SECONDS = max(
 # token is older than this, so it still rotates instead of being used forever.
 RAG_MONDAY_TOKEN_MAX_AGE_SECONDS = max(
     300,
-    int(os.environ.get("RAG_MONDAY_TOKEN_MAX_AGE_SECONDS", "1800")),
+    min(86400, int(os.environ.get("RAG_MONDAY_TOKEN_MAX_AGE_SECONDS", "1800"))),
 )
 # Optional-parameter budget across selected monday tools. OFF by default (0).
 # The old default (22) was catastrophic: a single heavy tool
