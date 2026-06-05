@@ -163,6 +163,46 @@ def test_heavy_tool_optional_param_count_is_large():
     assert _count_optional_props_in_schema(get_board_items_page_schema) >= 12
 
 
+import os as _os
+
+
+def test_allowlist_parser_default_when_unset():
+    from rag_agent.config import _parse_monday_tool_allowlist, RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST
+    saved = _os.environ.pop("RAG_MONDAY_MCP_TOOL_ALLOWLIST", None)
+    try:
+        assert _parse_monday_tool_allowlist() == set(RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST)
+        assert len(RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST) == 10
+    finally:
+        if saved is not None:
+            _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = saved
+
+
+def test_allowlist_parser_star_disables():
+    from rag_agent.config import _parse_monday_tool_allowlist
+    saved = _os.environ.get("RAG_MONDAY_MCP_TOOL_ALLOWLIST")
+    _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = "*"
+    try:
+        assert _parse_monday_tool_allowlist() == set()
+    finally:
+        if saved is None:
+            _os.environ.pop("RAG_MONDAY_MCP_TOOL_ALLOWLIST", None)
+        else:
+            _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = saved
+
+
+def test_allowlist_parser_explicit_list():
+    from rag_agent.config import _parse_monday_tool_allowlist
+    saved = _os.environ.get("RAG_MONDAY_MCP_TOOL_ALLOWLIST")
+    _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = "search, get_board_info"
+    try:
+        assert _parse_monday_tool_allowlist() == {"search", "get_board_info"}
+    finally:
+        if saved is None:
+            _os.environ.pop("RAG_MONDAY_MCP_TOOL_ALLOWLIST", None)
+        else:
+            _os.environ["RAG_MONDAY_MCP_TOOL_ALLOWLIST"] = saved
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

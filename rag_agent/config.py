@@ -79,17 +79,63 @@ RAG_ENABLE_MONDAY_MCP = os.environ.get("RAG_ENABLE_MONDAY_MCP", "false").strip()
 RAG_MONDAY_MCP_URL = os.environ.get("RAG_MONDAY_MCP_URL", "https://mcp.monday.com/mcp").strip()
 RAG_MONDAY_MCP_TRANSPORT = os.environ.get("RAG_MONDAY_MCP_TRANSPORT", "streamable_http").strip()
 RAG_MONDAY_MCP_TIMEOUT_SECONDS = int(os.environ.get("RAG_MONDAY_MCP_TIMEOUT_SECONDS", "25"))
-RAG_MONDAY_MCP_TOOL_ALLOWLIST = {
-    name.strip() for name in os.environ.get("RAG_MONDAY_MCP_TOOL_ALLOWLIST", "").split(",") if name.strip()
-}
-# Max Monday tools bound per request. Big enough to keep the full essential
-# read/discovery set (get_board_info, search, list_workspaces, all_monday_api,
-# get_column_type_info, ...) PLUS the core write tools. Anthropic/OpenAI both
-# handle dozens of tools; the old default (18) combined with a write-biased
-# ranking silently evicted the discovery tools the agent needs to find anything.
+# Curated default Monday tool allowlist: read + safe-write tools an onboarding
+# agent actually needs. The full hosted catalog is ~36-40 tools, which bloats the
+# prompt and causes wrong-tool selection. Override via env:
+#   RAG_MONDAY_MCP_TOOL_ALLOWLIST="search,get_board_info,..."  -> explicit set
+#   RAG_MONDAY_MCP_TOOL_ALLOWLIST="*" (or "all")               -> disable allowlist
+#                                                                 (cap does filtering)
+RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST = frozenset({
+    # reads (7)
+    "get_user_context",
+    "get_board_info",
+    "get_board_items_page",
+    "search",
+    "get_column_type_info",
+    "get_updates",
+    "list_users_and_teams",
+    # safe writes (3)
+    "create_update",
+    "change_item_column_values",
+    "create_item",
+})
+
+
+def _parse_monday_tool_allowlist() -> set[str]:
+    """Resolve the Monday tool allowlist from env.
+
+    Unset/empty -> the curated default (10 tools). The sentinel ``*``/``all``
+    disables the allowlist so ``_cap_monday_tools`` does the filtering. Any other
+    value is parsed as a comma-separated explicit set.
+    """
+    raw = (os.environ.get("RAG_MONDAY_MCP_TOOL_ALLOWLIST") or "").strip()
+    if not raw:
+        return set(RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST)
+    if raw.lower() in {"*", "all"}:
+        return set()
+    return {name.strip() for name in raw.split(",") if name.strip()}
+
+
+RAG_MONDAY_MCP_TOOL_ALLOWLIST = _parse_monday_tool_allowlist()
+# Safety-net cap (rarely fires now the allowlist is ~10). Kept so an explicit
+# wide/`*` allowlist still can't flood the model with the whole catalog.
 RAG_MONDAY_MCP_MAX_TOOLS = max(
     1,
     min(128, int(os.environ.get("RAG_MONDAY_MCP_MAX_TOOLS", "25"))),
+)
+
+# Monday OAuth token freshness.
+# Proactively refresh this many seconds before `expires_at` so a multi-step chat
+# turn never starts on a token about to expire (was a hard-coded 60s).
+RAG_MONDAY_TOKEN_REFRESH_LEEWAY_SECONDS = max(
+    30,
+    min(3600, int(os.environ.get("RAG_MONDAY_TOKEN_REFRESH_LEEWAY_SECONDS", "300"))),
+)
+# Fallback when Monday omits `expires_in` (no `expires_at` stored): refresh once the
+# token is older than this, so it still rotates instead of being used forever.
+RAG_MONDAY_TOKEN_MAX_AGE_SECONDS = max(
+    300,
+    int(os.environ.get("RAG_MONDAY_TOKEN_MAX_AGE_SECONDS", "1800")),
 )
 # Optional-parameter budget across selected monday tools. OFF by default (0).
 # The old default (22) was catastrophic: a single heavy tool
