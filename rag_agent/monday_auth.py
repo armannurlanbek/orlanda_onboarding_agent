@@ -801,7 +801,7 @@ def _load_tools_with_retry(make_get_tools_coro):
     return []
 
 
-def _ensure_sync_callable_tools(tools: list) -> list:
+def _ensure_sync_callable_tools(tools: list, *, for_session: bool = False) -> list:
     wrapped: list = []
     for tool in tools:
         name = str(getattr(tool, "name", "")).strip()
@@ -898,6 +898,21 @@ def _ensure_sync_callable_tools(tools: list) -> list:
                 return await _safe_coroutine_runner(coro_tool, tool_name, schema, **kwargs)
 
             return _runner
+
+        if for_session:
+            # Session-bound tools share ONE loop-bound ClientSession for the turn.
+            # Build coroutine-only so they can never be driven from a foreign loop
+            # (a sync .invoke() would otherwise bridge onto a background loop and
+            # terminate the session). A stray sync call now fails loudly instead.
+            wrapped.append(
+                StructuredTool.from_function(
+                    name=name or "monday_tool",
+                    description=description or f"MCP tool: {name or 'monday_tool'}",
+                    args_schema=args_schema,
+                    coroutine=_make_safe_coroutine(coroutine, name or "monday_tool", args_schema),
+                )
+            )
+            continue
 
         wrapped.append(
             StructuredTool.from_function(
@@ -1106,13 +1121,13 @@ def _build_monday_mcp_client(token: str):
     )
 
 
-def _prepare_monday_tools(raw_tools: list) -> list:
+def _prepare_monday_tools(raw_tools: list, *, for_session: bool = False) -> list:
     """Wrap + filter + cap raw MCP tools identically for every load path.
 
     Shared by the per-call loader and the persistent-session loader so both apply
     the same guards, denylist, allowlist and essential-tool-preserving caps.
     """
-    tools = _ensure_sync_callable_tools(raw_tools)
+    tools = _ensure_sync_callable_tools(raw_tools, for_session=for_session)
     # Drop UI-internal / agent-unsafe tools the server may advertise.
     tools = [t for t in tools if str(getattr(t, "name", "")).strip() not in _MONDAY_TOOL_DENYLIST]
     if RAG_MONDAY_MCP_TOOL_ALLOWLIST:
@@ -1200,7 +1215,7 @@ async def monday_session_tools(username: str, *, enabled: bool = True):
         session_cm = client.session("monday")
         session = await session_cm.__aenter__()
         raw_tools = await load_mcp_tools(session)
-        tools = _prepare_monday_tools(raw_tools)
+        tools = _prepare_monday_tools(raw_tools, for_session=True)
     except Exception:
         # Setup failed: tear down any partial session, fall back to per-call tools.
         if session_cm is not None:

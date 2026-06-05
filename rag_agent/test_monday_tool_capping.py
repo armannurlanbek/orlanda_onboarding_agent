@@ -289,6 +289,34 @@ def test_token_needs_refresh_near_expiry_is_true():
     assert _token_needs_refresh(_fake_conn(expires_at=soon), "tok") is True
 
 
+class _FakeAsyncTool:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.description = "desc"
+        self.args_schema = None
+        self.func = None
+
+        async def _coro(**kwargs):
+            return "ok"
+
+        self.coroutine = _coro
+
+
+def test_session_tools_are_coroutine_only():
+    from rag_agent.monday_auth import _ensure_sync_callable_tools
+    wrapped = _ensure_sync_callable_tools([_FakeAsyncTool("get_board_info")], for_session=True)
+    assert len(wrapped) == 1
+    assert wrapped[0].coroutine is not None
+    assert wrapped[0].func is None
+
+
+def test_per_call_tools_keep_sync_func():
+    from rag_agent.monday_auth import _ensure_sync_callable_tools
+    wrapped = _ensure_sync_callable_tools([_FakeAsyncTool("get_board_info")], for_session=False)
+    assert len(wrapped) == 1
+    assert wrapped[0].func is not None
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
