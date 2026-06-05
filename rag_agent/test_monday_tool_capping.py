@@ -241,6 +241,12 @@ def test_transient_refresh_failure_network():
     assert _is_permanent_refresh_failure() is False
 
 
+def test_rate_limited_refresh_is_transient():
+    # HTTP 429 is in the 4xx range but is rate-limiting, NOT a dead grant.
+    from rag_agent.monday_auth import _is_permanent_refresh_failure
+    assert _is_permanent_refresh_failure(http_code=429) is False
+
+
 def _fake_conn(expires_at=None, updated_at=None):
     class _C:
         pass

@@ -478,14 +478,30 @@ _PERMANENT_OAUTH_ERRORS = frozenset({
 def _is_permanent_refresh_failure(*, http_code: int | None = None, error: str | None = None) -> bool:
     """True when a refresh failure means the grant is dead (revoke + reconnect).
 
-    A 4xx from the token endpoint, or a structured OAuth error like
-    ``invalid_grant``, is permanent. 5xx / network errors are transient.
+    A 4xx from the token endpoint (except 429 rate-limiting), or a structured
+    OAuth error like ``invalid_grant``, is permanent. 5xx / 429 / network errors
+    are transient and must NOT disconnect the user.
     """
-    if isinstance(http_code, int) and 400 <= http_code < 500:
+    if isinstance(http_code, int) and 400 <= http_code < 500 and http_code != 429:
         return True
     if str(error or "").strip().lower() in _PERMANENT_OAUTH_ERRORS:
         return True
     return False
+
+
+def _revoke_connection(db, conn) -> None:
+    """Mark a Monday connection revoked (user must reconnect). Isolated so a
+    failed revoke write logs distinctly and never masquerades as a token error."""
+    try:
+        conn.revoked_at = _utcnow()
+        conn.updated_at = _utcnow()
+        db.commit()
+    except Exception:
+        logger.warning("Monday connection revoke write failed")
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 def _refresh_access_token_for_user(username: str) -> str:
@@ -538,9 +554,7 @@ def _refresh_access_token_for_user(username: str) -> str:
                 code = getattr(exc, "code", None)
                 logger.warning("Monday token refresh failed: HTTP %s", code if code is not None else "?")
                 if _is_permanent_refresh_failure(http_code=code):
-                    conn.revoked_at = _utcnow()
-                    conn.updated_at = _utcnow()
-                    db.commit()
+                    _revoke_connection(db, conn)
                 return ""
             except (urllib_error.URLError, TimeoutError, OSError) as exc:
                 logger.warning("Monday token refresh failed: network error (%s)", type(exc).__name__)
@@ -554,9 +568,7 @@ def _refresh_access_token_for_user(username: str) -> str:
                 err = str(token_response.get("error") or "no access_token in response")
                 logger.warning("Monday token refresh failed: %s", err)
                 if _is_permanent_refresh_failure(error=token_response.get("error")):
-                    conn.revoked_at = _utcnow()
-                    conn.updated_at = _utcnow()
-                    db.commit()
+                    _revoke_connection(db, conn)
                 return ""
 
             # Monday may or may not rotate the refresh token; keep the old one if absent.
