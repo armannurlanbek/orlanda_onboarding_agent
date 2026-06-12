@@ -119,6 +119,43 @@ def wrap_write_tool_with_confirmation(tool: BaseTool) -> BaseTool:
     return StructuredTool(name=tool.name, description=description, args_schema=schema, coroutine=_gated)
 
 
+# ── Tool error handling ──────────────────────────────────────────────────────
+# monday/MCP errors (auth, unauthorized field, not found, partial GraphQL errors) otherwise
+# propagate out of the ToolNode and crash the whole chat stream. Wrap every tool so an error
+# becomes a short tool result the model can react to, instead of an unhandled exception.
+def _short_tool_error(exc: Exception) -> str:
+    """Trim a (often huge) tool error down to its human-readable lead."""
+    text = str(exc).strip()
+    cut = text.find("{")  # drop any large JSON payload that follows the message
+    if cut > 0:
+        text = text[:cut]
+    text = text.strip().rstrip(":").strip()
+    return (text or exc.__class__.__name__)[:300]
+
+
+def wrap_tool_with_error_handling(tool: BaseTool) -> BaseTool:
+    """Return a tool whose errors are returned as text instead of raising (no chat crash)."""
+
+    async def _safe(**kwargs):
+        try:
+            return await tool.ainvoke(kwargs)
+        except Exception as exc:  # noqa: BLE001 - surface to the model, don't kill the stream
+            msg = _short_tool_error(exc)
+            log.warning("monday tool %r failed: %s", tool.name, msg)
+            return (
+                f"Инструмент monday '{tool.name}' вернул ошибку: {msg}. Не выдумывай данные — "
+                "сообщи пользователю, что запрос не удался, и при необходимости попробуй другой "
+                "инструмент или уточни параметры."
+            )
+
+    return StructuredTool(
+        name=tool.name,
+        description=tool.description,
+        args_schema=_args_schema_dict(tool),
+        coroutine=_safe,
+    )
+
+
 def build_mcp_connection(access_token: str) -> dict:
     """Return the MultiServerMCPClient connection config for a given user token.
 
@@ -172,8 +209,13 @@ async def aget_monday_tools_for_user(username: str) -> list[BaseTool]:
     except Exception as exc:  # noqa: BLE001 - never break chat if monday is unreachable
         log.warning("Failed to load monday MCP tools for %r: %s", username, exc)
         return []
-    # Reads pass through; writes are gated behind in-chat confirmation.
-    tools = [wrap_write_tool_with_confirmation(t) if is_write_tool(t.name) else t for t in tools]
+    # Every tool gets error handling (so a monday error never crashes the chat); writes are
+    # additionally gated behind in-chat confirmation.
+    def _prepare(t: BaseTool) -> BaseTool:
+        safe = wrap_tool_with_error_handling(t)
+        return wrap_write_tool_with_confirmation(safe) if is_write_tool(t.name) else safe
+
+    tools = [_prepare(t) for t in tools]
     _tools_cache[token_hash] = (time.time() + _TOOLS_CACHE_TTL_SECONDS, tools)
     return tools
 

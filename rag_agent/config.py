@@ -144,7 +144,7 @@ RAG_MONDAY_OAUTH_CLIENT_SECRET = os.environ.get("RAG_MONDAY_OAUTH_CLIENT_SECRET"
 # Space-separated OAuth scopes. MUST match the scopes configured on the monday app.
 RAG_MONDAY_OAUTH_SCOPES = os.environ.get(
     "RAG_MONDAY_OAUTH_SCOPES",
-    "me:read boards:read boards:write workspaces:read users:read account:read "
+    "me:read boards:read boards:write workspaces:read users:read teams:read account:read "
     "updates:read updates:write docs:read",
 ).strip()
 # Explicit OAuth redirect URI. Leave empty to derive from RAG_FRONTEND_BASE_URL (prod) or
