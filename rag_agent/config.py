@@ -158,9 +158,12 @@ RAG_MONDAY_OAUTH_AUTHORIZE_URL = os.environ.get(
 RAG_MONDAY_OAUTH_TOKEN_URL = os.environ.get(
     "RAG_MONDAY_OAUTH_TOKEN_URL", "https://auth.monday.com/oauth2/token"
 ).strip()
-# Remote MCP endpoint + API version header sent on MCP requests.
+# Remote MCP endpoint. Leave RAG_MONDAY_API_VERSION EMPTY so the MCP server uses its own
+# current API version (its tool queries target the latest schema; pinning an old version like
+# 2025-07 makes calls fail with "Cannot query field ... Did you mean ..._str?"). Only set a
+# version to deliberately pin one.
 RAG_MONDAY_MCP_URL = os.environ.get("RAG_MONDAY_MCP_URL", "https://mcp.monday.com/mcp").strip()
-RAG_MONDAY_API_VERSION = os.environ.get("RAG_MONDAY_API_VERSION", "2025-07").strip()
+RAG_MONDAY_API_VERSION = os.environ.get("RAG_MONDAY_API_VERSION", "").strip()
 # Optional explicit Fernet key (urlsafe base64, 32 bytes) for encrypting stored monday
 # tokens at rest. If empty, a key is derived from RAG_AGENT_SECRET_KEY (see rag_agent.crypto).
 RAG_MONDAY_TOKEN_ENC_KEY = os.environ.get("RAG_MONDAY_TOKEN_ENC_KEY", "").strip() or None

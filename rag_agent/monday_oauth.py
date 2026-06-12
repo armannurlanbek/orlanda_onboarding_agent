@@ -102,11 +102,14 @@ def exchange_code_for_token(code: str) -> dict:
 
 def fetch_monday_identity(access_token: str) -> dict:
     """Best-effort: return ``{"name", "account_id"}`` for display. Never raises."""
+    headers = {"Authorization": access_token}
+    if RAG_MONDAY_API_VERSION:
+        headers["API-Version"] = RAG_MONDAY_API_VERSION
     try:
         resp = httpx.post(
             _MONDAY_API_URL,
             json={"query": "query { me { name account { id } } }"},
-            headers={"Authorization": access_token, "API-Version": RAG_MONDAY_API_VERSION},
+            headers=headers,
             timeout=15.0,
         )
         resp.raise_for_status()

@@ -120,15 +120,19 @@ def wrap_write_tool_with_confirmation(tool: BaseTool) -> BaseTool:
 
 
 def build_mcp_connection(access_token: str) -> dict:
-    """Return the MultiServerMCPClient connection config for a given user token."""
+    """Return the MultiServerMCPClient connection config for a given user token.
+
+    Only pin an API-Version header when explicitly configured; otherwise let the MCP server use
+    its own current version (its tool queries target the latest schema).
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    if RAG_MONDAY_API_VERSION:
+        headers["API-Version"] = RAG_MONDAY_API_VERSION
     return {
         "monday": {
             "transport": "streamable_http",
             "url": RAG_MONDAY_MCP_URL,
-            "headers": {
-                "Authorization": f"Bearer {access_token}",
-                "API-Version": RAG_MONDAY_API_VERSION,
-            },
+            "headers": headers,
         }
     }
 

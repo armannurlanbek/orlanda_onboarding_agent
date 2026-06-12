@@ -32,11 +32,14 @@ def _get_token() -> str | None:
 
 def _connection(token: str, scheme: str) -> dict:
     auth = f"Bearer {token}" if scheme == "bearer" else token
+    headers = {"Authorization": auth}
+    if RAG_MONDAY_API_VERSION:
+        headers["API-Version"] = RAG_MONDAY_API_VERSION
     return {
         "monday": {
             "transport": "streamable_http",
             "url": RAG_MONDAY_MCP_URL,
-            "headers": {"Authorization": auth, "API-Version": RAG_MONDAY_API_VERSION},
+            "headers": headers,
         }
     }
 
