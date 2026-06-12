@@ -10,6 +10,7 @@ import ChatPage from "./pages/Chat";
 import AdminPage from "./pages/Admin";
 import AdminLogsPage from "./pages/AdminLogs";
 import AdminDocumentsPage from "./pages/AdminDocuments";
+import SettingsPage from "./pages/Settings";
 import ComponentsPage from "./pages/Components";
 import NotFound from "./pages/NotFound.tsx";
 
@@ -26,6 +27,7 @@ const App = () => (
             <Route path="/" element={<Navigate to="/chat" replace />} />
             <Route path="/auth" element={<AuthPage />} />
             <Route path="/chat" element={<RequireAuth><ChatPage /></RequireAuth>} />
+            <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
             <Route path="/admin" element={<RequireAuth adminOnly><AdminPage /></RequireAuth>} />
             <Route path="/admin/logs" element={<RequireAuth adminOnly><AdminLogsPage /></RequireAuth>} />
             <Route path="/admin/documents" element={<RequireAuth adminOnly><AdminDocumentsPage /></RequireAuth>} />

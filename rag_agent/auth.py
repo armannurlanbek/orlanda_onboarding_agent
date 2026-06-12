@@ -114,6 +114,26 @@ def get_user_role(username: str) -> str:
     return "user"
 
 
+def get_user_id(username: str) -> uuid.UUID | None:
+    """Resolve a username to its users.id UUID, or None if unknown / no DB configured.
+
+    Uses the same identity-candidate matching as the rest of auth (company-email local
+    part and full address both resolve to the same row).
+    """
+    if not DATABASE_URL or not username:
+        return None
+    from rag_agent.db.models import User
+    from rag_agent.db.session import get_session_factory
+
+    session = get_session_factory()()
+    try:
+        return session.scalar(
+            select(User.id).where(func.lower(User.username).in_(_identity_candidates(username)))
+        )
+    finally:
+        session.close()
+
+
 def _username_rule_error_message() -> str:
     return (
         "Разрешены короткие логины (буквы/цифры/_/-) "

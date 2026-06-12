@@ -9,10 +9,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import asyncio
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException, Header, Request, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -28,6 +29,7 @@ from rag_agent.agent import (
     delete_conversation_state,
     get_active_model_name,
     get_base_agent,
+    monday_system_prompt,
     set_active_model,
 )
 from rag_agent.auth import (
@@ -45,6 +47,7 @@ from rag_agent.config import (
     API_HOST,
     API_PORT,
     RAG_CORS_ALLOWED_ORIGINS,
+    RAG_FRONTEND_BASE_URL,
     RAG_LOG_FORMAT,
     RAG_MAX_AGENT_RECURSION_LIMIT,
     RAG_ENABLE_RATE_LIMIT_FALLBACK,
@@ -60,10 +63,21 @@ from rag_agent.config import (
     RAG_RATE_LIMIT_LOGIN,
     RAG_RATE_LIMIT_REGISTER,
     RAG_USERNAME_MAX_LEN,
+    monday_enabled,
     require_runtime_keys,
     warn_oauth_redirect_misconfig,
 )
 from rag_agent.audit_log import count_audit, list_audit, write_audit
+from rag_agent.monday_oauth import (
+    build_authorize_url as monday_build_authorize_url,
+    delete_token as monday_delete_token,
+    exchange_code_for_token as monday_exchange_code_for_token,
+    fetch_monday_identity as monday_fetch_identity,
+    get_connection_status as monday_get_connection_status,
+    store_token as monday_store_token,
+    verify_state as monday_verify_state,
+)
+from rag_agent.monday_tools import aget_monday_tools_for_user
 from rag_agent.indexing import (
     KNOWLEDGE_BASE_DIR,
     reconcile_all_documents,
@@ -1244,6 +1258,103 @@ def admin_user_provision(
     return {"ok": True, "user": result}
 
 
+# ── monday.com integration (per-user OAuth + remote MCP) ─────────────────────
+def _monday_settings_redirect(status: str, reason: str | None = None) -> RedirectResponse:
+    """302 back to the frontend settings page carrying a monday status flag.
+
+    Uses RAG_FRONTEND_BASE_URL when set (split dev/prod hosts), else a same-origin
+    relative path. This is a browser redirect target, not an API response.
+    """
+    params = {"monday": status}
+    if reason:
+        params["reason"] = reason
+    base = RAG_FRONTEND_BASE_URL or ""
+    return RedirectResponse(url=f"{base}/settings?{urlencode(params)}", status_code=302)
+
+
+@app.get("/integrations/monday/authorize")
+def monday_authorize(authorization: str | None = Header(default=None)):
+    """Return the monday consent URL for the logged-in user to open in the browser."""
+    username = _get_username(authorization)
+    if not monday_enabled():
+        raise HTTPException(status_code=503, detail="Интеграция monday.com не настроена")
+    return {"authorize_url": monday_build_authorize_url(username)}
+
+
+@app.get("/auth/monday/callback")
+def monday_callback(
+    request: Request,
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+):
+    """OAuth redirect target: validate state, exchange code, store token, bounce to UI.
+
+    The user's identity comes from the signed `state` (a browser redirect carries no
+    Authorization header). All failure paths redirect back with `?monday=error&reason=...`.
+    """
+    if not monday_enabled():
+        return _monday_settings_redirect("error", "not_configured")
+    if error:
+        return _monday_settings_redirect("error", error)
+    username = monday_verify_state(state)
+    if not username:
+        return _monday_settings_redirect("error", "invalid_state")
+    if not code:
+        return _monday_settings_redirect("error", "missing_code")
+    try:
+        token_data = monday_exchange_code_for_token(code)
+    except Exception:
+        logger.exception("monday token exchange failed")
+        return _monday_settings_redirect("error", "token_exchange_failed")
+    access_token = (token_data or {}).get("access_token")
+    if not access_token:
+        return _monday_settings_redirect("error", "no_token")
+    identity = monday_fetch_identity(access_token)
+    stored = monday_store_token(
+        username,
+        access_token,
+        scope=token_data.get("scope", ""),
+        token_type=token_data.get("token_type", "Bearer"),
+        account_id=identity.get("account_id"),
+        user_name=identity.get("name"),
+    )
+    if not stored:
+        return _monday_settings_redirect("error", "store_failed")
+    write_audit(
+        "monday_connect",
+        username,
+        target="monday",
+        details={"scope": token_data.get("scope", "")},
+        ip_address=request.client.host if request.client else "",
+    )
+    return _monday_settings_redirect("connected")
+
+
+@app.get("/integrations/monday/status")
+def monday_status(authorization: str | None = Header(default=None)):
+    """Return whether the logged-in user has connected their monday account."""
+    username = _get_username(authorization)
+    status = monday_get_connection_status(username)
+    status["enabled"] = monday_enabled()
+    return status
+
+
+@app.delete("/integrations/monday")
+def monday_disconnect(request: Request, authorization: str | None = Header(default=None)):
+    """Delete the logged-in user's stored monday token (disconnect)."""
+    username = _get_username(authorization)
+    disconnected = monday_delete_token(username)
+    if disconnected:
+        write_audit(
+            "monday_disconnect",
+            username,
+            target="monday",
+            ip_address=request.client.host if request.client else "",
+        )
+    return {"ok": True, "disconnected": disconnected}
+
+
 def _unwrap_response_content(content) -> str:
     """Strip the structured `{"response_content": "..."}` wrapper down to plain text.
 
@@ -1520,6 +1631,10 @@ def chat(
                 }
             )
 
+        # NOTE: monday tools are intentionally NOT added here. They are MCP (async-only) tools
+        # and this sync endpoint executes tools synchronously via runtime_agent.invoke(), which
+        # cannot drive a coroutine-only tool. The UI uses /chat/stream (async), which injects
+        # them. A programmatic caller of /chat gets the RAG-only agent.
         extra_tools = []
         selected_model_name: str | None = None
 
@@ -1748,9 +1863,19 @@ async def chat_stream(
         accumulated_parts: list[str] = []
         final_content = ""
         try:
+            # monday tools run under the user's OWN monday token, so monday enforces their
+            # permissions. Reads run freely; write tools are confirmation-gated (they only
+            # mutate monday once the user confirms in chat — see monday_tools). Injected only on
+            # this async path: MCP tools are async-only and the sync /chat path cannot execute
+            # them. Empty when monday is off / the user has not connected.
+            monday_tools = await aget_monday_tools_for_user(username)
             # build_agent only assembles the graph here; offloaded so the sync
             # build + history prep never stall the event loop.
-            runtime_agent = await asyncio.to_thread(build_agent)
+            runtime_agent = await asyncio.to_thread(
+                build_agent,
+                extra_tools=monday_tools,
+                system_prompt_suffix=(monday_system_prompt if monday_tools else None),
+            )
             try:
                 if await asyncio.to_thread(_repair_conversation_history_for_provider, runtime_agent, config):
                     push_event("system", "history_repair", "success", "Conversation history was repaired.")

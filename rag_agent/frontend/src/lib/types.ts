@@ -71,3 +71,13 @@ export type DocMeta = {
   expiresAt: string;
   status: "actual" | "review_soon" | "expired";
 };
+
+export type MondayStatus = {
+  connected: boolean;
+  // false when the integration is not configured on the server (no client id/secret).
+  enabled: boolean;
+  scope?: string;
+  accountId?: string | null;
+  mondayUserName?: string | null;
+  connectedAt?: string | null;
+};

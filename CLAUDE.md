@@ -12,7 +12,10 @@ Everything backend lives under `rag_agent/`. The frontend is `rag_agent/frontend
 
 ## Commands
 
-Backend (run from project root; needs a `.env` with `DATABASE_URL` — see below):
+Backend (run from project root; copy `.env.example` → `.env` for the required keys —
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, a non-default `RAG_AGENT_SECRET_KEY`). Note
+`.env.example` deliberately omits `DATABASE_URL` because `docker-compose.yml` assembles it from
+`DB_PASSWORD`; a **local, non-Docker** run must set `DATABASE_URL` yourself):
 
 ```bash
 python -m alembic upgrade head        # apply DB migrations (also runs on container start)

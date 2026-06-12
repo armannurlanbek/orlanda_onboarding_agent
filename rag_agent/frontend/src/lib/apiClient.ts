@@ -3,6 +3,7 @@ import type {
   Conversation,
   DocMeta,
   Message,
+  MondayStatus,
   PdfFile,
   TextBlock,
   ToolEvent,
@@ -537,6 +538,40 @@ export const api = {
         token,
         body: { expires_at: expiresAt || null },
       });
+    },
+  },
+
+  integrations: {
+    monday: {
+      async status(token: string): Promise<MondayStatus> {
+        const data = await request<{
+          connected: boolean;
+          enabled?: boolean;
+          scope?: string;
+          account_id?: string | null;
+          monday_user_name?: string | null;
+          connected_at?: string | null;
+        }>("/integrations/monday/status", { token });
+        return {
+          connected: Boolean(data.connected),
+          enabled: Boolean(data.enabled),
+          scope: data.scope ?? "",
+          accountId: data.account_id ?? null,
+          mondayUserName: data.monday_user_name ?? null,
+          connectedAt: data.connected_at ?? null,
+        };
+      },
+      async authorizeUrl(token: string): Promise<string> {
+        const data = await request<{ authorize_url: string }>("/integrations/monday/authorize", { token });
+        return String(data.authorize_url || "");
+      },
+      async disconnect(token: string): Promise<boolean> {
+        const data = await request<{ ok: boolean; disconnected: boolean }>("/integrations/monday", {
+          method: "DELETE",
+          token,
+        });
+        return Boolean(data.disconnected);
+      },
     },
   },
 };

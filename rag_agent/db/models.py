@@ -201,3 +201,45 @@ class AdminAuditLog(Base):
     target: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     details_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     ip_address: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+
+
+class UserMondayToken(Base):
+    """Per-user monday.com OAuth token (access token encrypted at rest).
+
+    One row per user. monday OAuth tokens do not expire and have no refresh token, so we
+    store only the encrypted access token plus the granted scope. All monday calls run
+    under this token, so monday enforces the user's own permissions. Encryption is handled
+    by ``rag_agent.crypto`` (see ``access_token_encrypted``).
+    """
+
+    __tablename__ = "user_monday_oauth"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    access_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    scope: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    token_type: Mapped[str] = mapped_column(String(32), nullable=False, default="Bearer")
+    # Optional display metadata fetched from monday at connect time.
+    monday_account_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    monday_user_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

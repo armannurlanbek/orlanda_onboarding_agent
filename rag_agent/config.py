@@ -133,6 +133,59 @@ RAG_RATE_LIMIT_CHAT = os.environ.get("RAG_RATE_LIMIT_CHAT", "60/minute").strip()
 # Logging format: "json" (default, structured) or "text" (human-readable dev output).
 RAG_LOG_FORMAT = os.environ.get("RAG_LOG_FORMAT", "json").strip().lower()
 
+# ── monday.com integration (per-user OAuth + remote MCP) ─────────────────────
+# Optional feature: enabled only when both client id and secret are set (see
+# monday_enabled()). Each user connects their OWN monday account; the agent calls
+# monday's remote MCP with that user's token, so monday enforces the user's own
+# permissions (no shared service account). monday OAuth tokens do not expire and have
+# no refresh token, so we store only the (encrypted) access token + granted scope.
+RAG_MONDAY_OAUTH_CLIENT_ID = os.environ.get("RAG_MONDAY_OAUTH_CLIENT_ID", "").strip() or None
+RAG_MONDAY_OAUTH_CLIENT_SECRET = os.environ.get("RAG_MONDAY_OAUTH_CLIENT_SECRET", "").strip() or None
+# Space-separated OAuth scopes. MUST match the scopes configured on the monday app.
+RAG_MONDAY_OAUTH_SCOPES = os.environ.get(
+    "RAG_MONDAY_OAUTH_SCOPES",
+    "me:read boards:read boards:write workspaces:read users:read account:read "
+    "updates:read updates:write docs:read",
+).strip()
+# Explicit OAuth redirect URI. Leave empty to derive from RAG_FRONTEND_BASE_URL (prod) or
+# fall back to localhost (dev). Whatever resolves MUST exactly match a redirect URL set on
+# the monday app (see monday_redirect_uri()).
+RAG_MONDAY_OAUTH_REDIRECT_URI = os.environ.get("RAG_MONDAY_OAUTH_REDIRECT_URI", "").strip() or None
+# monday OAuth endpoints (rarely need changing).
+RAG_MONDAY_OAUTH_AUTHORIZE_URL = os.environ.get(
+    "RAG_MONDAY_OAUTH_AUTHORIZE_URL", "https://auth.monday.com/oauth2/authorize"
+).strip()
+RAG_MONDAY_OAUTH_TOKEN_URL = os.environ.get(
+    "RAG_MONDAY_OAUTH_TOKEN_URL", "https://auth.monday.com/oauth2/token"
+).strip()
+# Remote MCP endpoint + API version header sent on MCP requests.
+RAG_MONDAY_MCP_URL = os.environ.get("RAG_MONDAY_MCP_URL", "https://mcp.monday.com/mcp").strip()
+RAG_MONDAY_API_VERSION = os.environ.get("RAG_MONDAY_API_VERSION", "2025-07").strip()
+# Optional explicit Fernet key (urlsafe base64, 32 bytes) for encrypting stored monday
+# tokens at rest. If empty, a key is derived from RAG_AGENT_SECRET_KEY (see rag_agent.crypto).
+RAG_MONDAY_TOKEN_ENC_KEY = os.environ.get("RAG_MONDAY_TOKEN_ENC_KEY", "").strip() or None
+# Backend OAuth callback route path; keep in sync with the route registered in api.py.
+MONDAY_OAUTH_CALLBACK_PATH = "/auth/monday/callback"
+
+
+def monday_enabled() -> bool:
+    """True only when the monday OAuth app credentials are configured."""
+    return bool(RAG_MONDAY_OAUTH_CLIENT_ID and RAG_MONDAY_OAUTH_CLIENT_SECRET)
+
+
+def monday_redirect_uri() -> str:
+    """Absolute OAuth redirect URI monday calls back after consent.
+
+    Resolution order: explicit RAG_MONDAY_OAUTH_REDIRECT_URI -> RAG_FRONTEND_BASE_URL +
+    callback path (prod, shared public origin) -> localhost dev default. Must exactly match
+    a redirect URL configured on the monday app or the token exchange will fail.
+    """
+    if RAG_MONDAY_OAUTH_REDIRECT_URI:
+        return RAG_MONDAY_OAUTH_REDIRECT_URI
+    if RAG_FRONTEND_BASE_URL:
+        return f"{RAG_FRONTEND_BASE_URL}{MONDAY_OAUTH_CALLBACK_PATH}"
+    return f"http://localhost:{API_PORT}{MONDAY_OAUTH_CALLBACK_PATH}"
+
 
 def _provider_from_model(model_name: str) -> str:
     """Return provider prefix from model name (`provider:model`) or openai by default."""

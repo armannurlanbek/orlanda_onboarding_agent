@@ -38,6 +38,18 @@ def _load_system_prompt() -> str:
     return data["system_prompt"].strip()
 
 
+def _load_optional_prompt(key: str) -> str:
+    """Load an optional secondary prompt section from the YAML; '' if absent.
+
+    Used for prompt fragments that are only appended for some requests (e.g. the monday
+    guidance, added only when a user has the monday tools available).
+    """
+    with open(_SYSTEM_PROMPT_PATH, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    value = data.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
 _checkpointer_cm = None
 _checkpointer = None
 _checkpointer_pool = None
@@ -321,6 +333,8 @@ def _bootstrap_active_model() -> None:
         return
 
 system_prompt = _load_system_prompt()
+# Optional guidance appended only when monday tools are present for a request.
+monday_system_prompt = _load_optional_prompt("monday_system_prompt")
 _bootstrap_active_model()
 
 
@@ -341,14 +355,18 @@ def build_agent(
     model_name: str | None = None,
     use_response_format: bool = False,
     include_retrieve_context: bool = True,
+    system_prompt_suffix: str | None = None,
 ):
     tools = [retrieve_context] if include_retrieve_context else []
     if extra_tools:
         tools.extend(extra_tools)
+    prompt = system_prompt
+    if system_prompt_suffix:
+        prompt = f"{system_prompt}\n\n{system_prompt_suffix.strip()}"
     kwargs = {
         "model": _build_chat_model(model_name=model_name),
         "tools": tools,
-        "system_prompt": system_prompt,
+        "system_prompt": prompt,
         "checkpointer": _get_checkpointer(),
         "context_schema": Context,
     }

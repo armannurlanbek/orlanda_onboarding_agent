@@ -26,6 +26,11 @@ export default defineConfig(({ mode }) => ({
     host: "::",
     port: 8080,
     proxy: {
+      // The OAuth callback is a real backend route reached by a browser redirect. It must be
+      // proxied to FastAPI (NOT served the SPA), so it is listed before "/auth" and has no
+      // SPA-navigation bypass. Only relevant if the monday redirect URI points at the dev
+      // server; if it points straight at :8000 this rule is simply unused.
+      "/auth/monday/callback": { target: apiTarget, changeOrigin: true },
       "/auth": { target: apiTarget, changeOrigin: true, bypass: bypassSpaNavigation },
       "/chat": { target: apiTarget, changeOrigin: true, bypass: bypassSpaNavigation },
       "/knowledge": { target: apiTarget, changeOrigin: true },

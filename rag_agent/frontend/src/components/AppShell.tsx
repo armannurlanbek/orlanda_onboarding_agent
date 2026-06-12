@@ -3,7 +3,7 @@ import { Logo } from "./Logo";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/lib/auth";
-import { BookOpen, ChevronDown, LogOut, Settings, ShieldCheck } from "lucide-react";
+import { BookOpen, ChevronDown, LogOut, Plug, Settings, ShieldCheck } from "lucide-react";
 
 type Props = {
   onOpenKnowledge: () => void;
@@ -45,6 +45,7 @@ export function AppShell({ onOpenKnowledge, onOpenSettings, children, lockLayout
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={onOpenKnowledge}><BookOpen className="h-4 w-4" /> Документы</DropdownMenuItem>
                 <DropdownMenuItem onClick={onOpenSettings}><Settings className="h-4 w-4" /> Настройки</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => nav("/settings")}><Plug className="h-4 w-4" /> Интеграции</DropdownMenuItem>
                 {user?.role === "admin" && (
                   <>
                     <DropdownMenuItem onClick={() => nav("/admin/logs")}><ShieldCheck className="h-4 w-4" /> Журнал диалогов</DropdownMenuItem>
