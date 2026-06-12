@@ -3,7 +3,6 @@ import type {
   Conversation,
   DocMeta,
   Message,
-  MondayConnectionStatus,
   PdfFile,
   TextBlock,
   ToolEvent,
@@ -184,26 +183,6 @@ export const api = {
           mustChangePassword: Boolean(data.must_change_password),
         },
       };
-    },
-    async mondayStatus(token: string): Promise<MondayConnectionStatus> {
-      const data = await request<any>("/auth/monday/status", { token });
-      return {
-        enabled: Boolean(data?.enabled),
-        connected: Boolean(data?.connected),
-        mondayUserId: data?.monday_user_id ?? null,
-        mondayAccountId: data?.monday_account_id ?? null,
-        scope: data?.scope ?? null,
-        expiresAt: data?.expires_at ?? null,
-        revoked: Boolean(data?.revoked),
-      };
-    },
-    async mondayStart(token: string, redirectUri?: string): Promise<{ authorizationUrl: string }> {
-      const qs = redirectUri ? `?redirect_uri=${encodeURIComponent(redirectUri)}` : "";
-      const data = await request<{ authorization_url: string }>(`/auth/monday/start${qs}`, { token });
-      return { authorizationUrl: String(data.authorization_url || "") };
-    },
-    async mondayDisconnect(token: string): Promise<void> {
-      await request("/auth/monday/disconnect", { method: "POST", token });
     },
   },
 

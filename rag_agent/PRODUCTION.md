@@ -71,25 +71,6 @@ So: **Slack → your backend → RAG API (`/chat`) → response back to Slack.**
 
 ---
 
-## 7. Monday MCP (per-user OAuth rollout)
-
-- [ ] Set env:
-  - `RAG_ENABLE_MONDAY_MCP=true`
-  - `RAG_MONDAY_MCP_OAUTH_ENABLED=true`
-  - `RAG_MONDAY_MCP_URL=https://mcp.monday.com/mcp`
-  - `RAG_MONDAY_OAUTH_CLIENT_ID`, `RAG_MONDAY_OAUTH_CLIENT_SECRET`
-  - `RAG_MONDAY_OAUTH_REDIRECT_URI=https://<your-domain>/auth/monday/callback`
-  - `MONDAY_ENCRYPTION_KEY=<strong-random-secret>`
-- [ ] Verify monday MCP app is installed in monday workspace and OAuth consent works for non-admin users.
-- [ ] Validate user isolation: two app users connect different monday accounts and confirm each sees only own monday data.
-- [ ] Validate intent routing:
-  - non-monday questions should not trigger monday tool path,
-  - monday actions without connection should return guided connect message,
-  - monday actions after connect should execute successfully.
-- [ ] Validate outage behavior: if monday MCP is unavailable, chat should still return a normal answer without crash.
-
----
-
 ## Quick start (production-like)
 
 ```bash

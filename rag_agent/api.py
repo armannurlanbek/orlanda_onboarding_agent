@@ -7,13 +7,12 @@ import logging.config
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import quote
 
 import asyncio
 
 from fastapi import FastAPI, HTTPException, Header, Request, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -48,10 +47,6 @@ from rag_agent.config import (
     RAG_CORS_ALLOWED_ORIGINS,
     RAG_LOG_FORMAT,
     RAG_MAX_AGENT_RECURSION_LIMIT,
-    RAG_FRONTEND_BASE_URL,
-    RAG_ENABLE_MONDAY_MCP,
-    RAG_MONDAY_MCP_OAUTH_ENABLED,
-    RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY,
     RAG_ENABLE_RATE_LIMIT_FALLBACK,
     RAG_FALLBACK_MODEL,
     RAG_HISTORY_KEEP_LAST_MESSAGES,
@@ -69,17 +64,6 @@ from rag_agent.config import (
     warn_oauth_redirect_misconfig,
 )
 from rag_agent.audit_log import count_audit, list_audit, write_audit
-from rag_agent.monday_auth import (
-    begin_monday_call_stats,
-    complete_monday_oauth_callback,
-    detect_monday_intent,
-    detect_monday_write_intent,
-    disconnect_monday,
-    get_monday_call_stats,
-    get_monday_status,
-    monday_session_tools,
-    start_monday_oauth,
-)
 from rag_agent.indexing import (
     KNOWLEDGE_BASE_DIR,
     reconcile_all_documents,
@@ -151,14 +135,6 @@ else:
 logger = logging.getLogger(__name__)
 
 
-def _frontend_redirect_url(path_and_query: str) -> str:
-    target = str(path_and_query or "").strip() or "/"
-    if not target.startswith("/"):
-        target = "/" + target
-    base = (RAG_FRONTEND_BASE_URL or "").strip().rstrip("/")
-    return f"{base}{target}" if base else target
-
-
 def _is_rate_limit_error(err: Exception) -> bool:
     txt = str(err).lower()
     return "rate_limit" in txt or "rate limit" in txt or "error code: 429" in txt
@@ -172,11 +148,6 @@ def _is_provider_overloaded_error(err: Exception) -> bool:
 def _is_structured_output_validation_error(err: Exception) -> bool:
     txt = str(err).lower()
     return "structuredoutputvalidationerror" in txt or "failed to parse structured output" in txt
-
-
-def _is_monday_tool_validation_error(err: Exception) -> bool:
-    txt = str(err or "").lower()
-    return ("mcp error -32602" in txt) or ("invalid arguments for tool" in txt) or ("input validation error" in txt)
 
 
 def _extract_agent_response_text(response: dict) -> str:
@@ -1243,69 +1214,6 @@ def me(authorization: str | None = Header(default=None)):
     }
 
 
-@app.get("/auth/monday/status")
-def monday_status(authorization: str | None = Header(default=None)):
-    """Return per-user monday connection status."""
-    username = _get_username(authorization, enforce_password_rotation=False)
-    status = get_monday_status(username)
-    return {
-        "enabled": bool(RAG_ENABLE_MONDAY_MCP and RAG_MONDAY_MCP_OAUTH_ENABLED),
-        "connected": bool(status.connected),
-        "monday_user_id": status.monday_user_id,
-        "monday_account_id": status.monday_account_id,
-        "scope": status.scope,
-        "expires_at": status.expires_at,
-        "revoked": bool(status.revoked),
-    }
-
-
-@app.get("/auth/monday/start")
-def monday_start(
-    authorization: str | None = Header(default=None),
-    redirect_uri: str | None = Query(default=None),
-):
-    """Start monday OAuth for current user and return authorization URL."""
-    username = _get_username(authorization, enforce_password_rotation=False)
-    if not RAG_ENABLE_MONDAY_MCP or not RAG_MONDAY_MCP_OAUTH_ENABLED:
-        raise HTTPException(status_code=400, detail="Monday MCP auth is disabled")
-    try:
-        payload = start_monday_oauth(username=username, redirect_uri=redirect_uri)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return {"ok": True, **payload}
-
-
-@app.get("/auth/monday/callback")
-def monday_callback(
-    state: str,
-    code: str | None = None,
-    error: str | None = None,
-    error_description: str | None = None,
-):
-    """Complete monday OAuth callback and redirect user back to chat."""
-    try:
-        complete_monday_oauth_callback(
-            state=state,
-            code=code,
-            error=error,
-            error_description=error_description,
-        )
-    except Exception as e:
-        return RedirectResponse(
-            url=_frontend_redirect_url(f"/chat?monday_oauth=error&reason={quote(str(e), safe='')}"),
-            status_code=302,
-        )
-    return RedirectResponse(url=_frontend_redirect_url("/chat?monday_oauth=ok"), status_code=302)
-
-
-@app.post("/auth/monday/disconnect")
-def monday_disconnect(authorization: str | None = Header(default=None)):
-    """Disconnect monday account for current user."""
-    username = _get_username(authorization, enforce_password_rotation=False)
-    disconnect_monday(username)
-    return {"ok": True}
-
-
 @app.post("/admin/users/provision")
 def admin_user_provision(
     request: Request,
@@ -1614,51 +1522,6 @@ def chat(
 
         extra_tools = []
         selected_model_name: str | None = None
-        monday_intent = bool(RAG_ENABLE_MONDAY_MCP and detect_monday_intent(user_message))
-        monday_write_intent = bool(monday_intent and detect_monday_write_intent(user_message))
-        monday_status_snapshot = get_monday_status(username) if RAG_ENABLE_MONDAY_MCP else None
-        monday_connected = bool(monday_status_snapshot and monday_status_snapshot.connected)
-        # Connected ⇒ tools attached. Only fall back to keyword-intent gating when
-        # RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY is opted in.
-        include_monday_tools = bool(
-            RAG_ENABLE_MONDAY_MCP
-            and monday_connected
-            and (not RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY or monday_intent)
-        )
-        if monday_intent:
-            on_tool_event(
-                {
-                    "source": "system",
-                    "tool_name": "monday_intent_detected",
-                    "status": "success" if include_monday_tools else "error",
-                    "message": (
-                        "Monday intent detected; monday tools enabled for this request."
-                        if include_monday_tools
-                        else "Monday intent detected, but monday account is not connected."
-                    ),
-                    "ts": int(time.time() * 1000),
-                }
-            )
-            if not include_monday_tools:
-                return ChatResponse(
-                    response=(
-                        "Чтобы работать с Monday из чата, подключите ваш monday аккаунт: "
-                        "откройте Настройки аккаунта -> Monday -> Подключить, завершите OAuth, и повторите запрос."
-                    ),
-                    sources=[],
-                    tool_events=tool_events,
-                )
-        if monday_write_intent and "апдейт" in user_message.lower() and ("в задачу" in user_message.lower() or "task" in user_message.lower() or "item" in user_message.lower()):
-            # Guard against malformed write calls that frequently fail MCP validation.
-            if len(user_message.strip()) < 30:
-                return ChatResponse(
-                    response=(
-                        "Для изменения задачи в Monday не хватает деталей. "
-                        "Укажите целевой элемент и текст апдейта (`body`) в одном сообщении."
-                    ),
-                    sources=[],
-                    tool_events=tool_events,
-                )
 
         thread_id = _make_thread_id(username, conversation_id)
         config = {
@@ -1668,11 +1531,7 @@ def chat(
         runtime_agent = build_agent(
             extra_tools=extra_tools,
             model_name=selected_model_name,
-            monday_username=username,
-            include_monday_tools=include_monday_tools,
-            include_retrieve_context=not monday_write_intent,
         )
-        begin_monday_call_stats()
         repaired = _repair_conversation_history_for_provider(runtime_agent, config)
         if repaired:
             on_tool_event(
@@ -1713,17 +1572,6 @@ def chat(
             raise ValueError("Model returned empty response content")
         _ensure_assistant_turn_persisted(runtime_agent, config, content)
         sources = get_last_sources()
-        monday_stats = get_monday_call_stats()
-        if monday_write_intent and include_monday_tools and int(monday_stats.get("write_calls", 0)) == 0:
-            return ChatResponse(
-                response=(
-                    "Не удалось безопасно выполнить запись в Monday в этом ответе. "
-                    "Укажите точный элемент/задачу и текст апдейта (`body`) одной фразой, например: "
-                    "`добавь апдейт в item 12345: <текст>`."
-                ),
-                sources=[],
-                tool_events=tool_events,
-            )
         log_append(username=username, question=user_message, answer=content, sources=sources)
         return ChatResponse(response=content, sources=sources, tool_events=tool_events)
     except Exception as e:
@@ -1742,9 +1590,6 @@ def chat(
                     extra_tools=extra_tools,
                     model_name=selected_model_name,
                     use_response_format=False,
-                    monday_username=username,
-                    include_monday_tools=include_monday_tools,
-                    include_retrieve_context=not monday_write_intent,
                 )
                 retry_response = unstructured_agent.invoke(
                     {"messages": [{"role": "user", "content": user_message}]},
@@ -1790,9 +1635,6 @@ def chat(
                 fallback_agent = build_agent(
                     extra_tools=extra_tools,
                     model_name=RAG_FALLBACK_MODEL,
-                    monday_username=username,
-                    include_monday_tools=include_monday_tools,
-                    include_retrieve_context=not monday_write_intent,
                 )
                 response = fallback_agent.invoke(
                     {"messages": [{"role": "user", "content": user_message}]},
@@ -1842,21 +1684,11 @@ def chat(
                     "Подождите 10–30 секунд и повторите запрос."
                 ),
             )
-        if _is_monday_tool_validation_error(e):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Monday вернул ошибку валидации аргументов. "
-                    "Уточните целевой элемент и текст апдейта (`body`) и повторите запрос."
-                ),
-            )
         if "graphrecursionerror" in str(type(e)).lower() or "recursion limit" in str(e).lower():
-            monday_stats = get_monday_call_stats() if "get_monday_call_stats" in globals() else {}
             return ChatResponse(
                 response=(
-                    "Не удалось завершить запрос без повторяющихся вызовов инструментов. "
-                    "Сформулируйте задачу короче и отдельно: "
-                    "1) найти нужный item, 2) добавить апдейт с точным текстом."
+                    "Не удалось завершить запрос: модель слишком долго не могла прийти к ответу. "
+                    "Сформулируйте вопрос короче и конкретнее и повторите."
                 ),
                 sources=[],
                 tool_events=locals().get("tool_events", []),
@@ -1907,53 +1739,6 @@ async def chat_stream(
             }
         )
 
-    monday_intent = bool(RAG_ENABLE_MONDAY_MCP and detect_monday_intent(user_message))
-    monday_write_intent = bool(monday_intent and detect_monday_write_intent(user_message))
-    monday_status_snapshot = get_monday_status(username) if RAG_ENABLE_MONDAY_MCP else None
-    monday_connected = bool(monday_status_snapshot and monday_status_snapshot.connected)
-    # Connected ⇒ tools attached. Only fall back to keyword-intent gating when
-    # RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY is opted in.
-    include_monday_tools = bool(
-        RAG_ENABLE_MONDAY_MCP
-        and monday_connected
-        and (not RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY or monday_intent)
-    )
-
-    if monday_intent:
-        push_event(
-            "system",
-            "monday_intent_detected",
-            "success" if include_monday_tools else "error",
-            (
-                "Monday intent detected; monday tools enabled for this request."
-                if include_monday_tools
-                else "Monday intent detected, but monday account is not connected."
-            ),
-        )
-
-    if monday_intent and not include_monday_tools:
-        msg = (
-            "Чтобы работать с Monday из чата, подключите ваш monday аккаунт: "
-            "откройте Настройки аккаунта → Monday → Подключить, завершите OAuth, и повторите запрос."
-        )
-
-        async def _no_monday_gen():
-            yield f"data: {json.dumps({'type': 'delta', 'text': msg}, ensure_ascii=False)}\n\n"
-            yield (
-                "data: "
-                + json.dumps(
-                    {"type": "done", "response": msg, "sources": [], "tool_events": tool_events},
-                    ensure_ascii=False,
-                )
-                + "\n\n"
-            )
-
-        return StreamingResponse(
-            _no_monday_gen(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
-        )
-
     thread_id = _make_thread_id(username, conversation_id)
     config = {
         "configurable": {"thread_id": thread_id},
@@ -1962,26 +1747,10 @@ async def chat_stream(
     async def event_generator():
         accumulated_parts: list[str] = []
         final_content = ""
-        # Open ONE Monday MCP session for the whole turn (reused by every tool call)
-        # instead of a fresh HTTP session per call. monday_session_tools internally
-        # falls back to the per-call loader if a persistent session can't be opened,
-        # so this never regresses. It is built HERE so the session lives on this
-        # request's event loop for the entire stream (a ClientSession is loop-bound).
-        _monday_cm = monday_session_tools(username, enabled=include_monday_tools)
-        _monday_entered = False
         try:
-            monday_tools = await _monday_cm.__aenter__()
-            _monday_entered = True
-            # build_agent only assembles the graph here (tools already loaded);
-            # offloaded so the sync build + history prep never stall the event loop.
-            runtime_agent = await asyncio.to_thread(
-                build_agent,
-                extra_tools=monday_tools,
-                monday_username=username,
-                include_monday_tools=False,
-                include_retrieve_context=not monday_write_intent,
-            )
-            begin_monday_call_stats()
+            # build_agent only assembles the graph here; offloaded so the sync
+            # build + history prep never stall the event loop.
+            runtime_agent = await asyncio.to_thread(build_agent)
             try:
                 if await asyncio.to_thread(_repair_conversation_history_for_provider, runtime_agent, config):
                     push_event("system", "history_repair", "success", "Conversation history was repaired.")
@@ -2106,13 +1875,6 @@ async def chat_stream(
                 + json.dumps({"type": "error", "message": err_msg}, ensure_ascii=False)
                 + "\n\n"
             )
-        finally:
-            # Close the per-turn Monday MCP session (no-op if it never opened).
-            if _monday_entered:
-                try:
-                    await _monday_cm.__aexit__(None, None, None)
-                except Exception:
-                    pass
 
     return StreamingResponse(
         event_generator(),

@@ -14,7 +14,6 @@ import { useAuth } from "@/lib/auth";
 import type { Conversation, Message } from "@/lib/types";
 import { MessageSquarePlus, Menu, Send, Sparkles, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import type { MondayConnectionStatus } from "@/lib/types";
 
 export default function ChatPage() {
   const { token, user, changePassword } = useAuth();
@@ -33,8 +32,6 @@ export default function ChatPage() {
   const [newPassword, setNewPassword] = useState("");
   const [repeatPassword, setRepeatPassword] = useState("");
   const [changingPassword, setChangingPassword] = useState(false);
-  const [mondayStatus, setMondayStatus] = useState<MondayConnectionStatus | null>(null);
-  const [mondayLoading, setMondayLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const loadConversations = async (selectFirst = false) => {
@@ -69,31 +66,6 @@ export default function ChatPage() {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, sending]);
-
-  useEffect(() => {
-    if (!token) return;
-    setMondayLoading(true);
-    api.auth
-      .mondayStatus(token)
-      .then(setMondayStatus)
-      .catch(() => setMondayStatus(null))
-      .finally(() => setMondayLoading(false));
-  }, [token, settingsOpen]);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const status = params.get("monday_oauth");
-    if (!status) return;
-    if (status === "ok") {
-      toast.success("monday успешно подключен");
-    } else {
-      toast.error(params.get("reason") || "Не удалось подключить monday");
-    }
-    const next = new URL(window.location.href);
-    next.searchParams.delete("monday_oauth");
-    next.searchParams.delete("reason");
-    window.history.replaceState({}, "", next.toString());
-  }, []);
 
   const createConv = async () => {
     if (!user || !token) return;
@@ -314,29 +286,6 @@ export default function ChatPage() {
     }
   };
 
-  const connectMonday = async () => {
-    if (!token) return;
-    try {
-      const { authorizationUrl } = await api.auth.mondayStart(token);
-      if (!authorizationUrl) throw new Error("Не удалось получить ссылку авторизации monday");
-      window.location.href = authorizationUrl;
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Не удалось начать подключение monday");
-    }
-  };
-
-  const disconnectMonday = async () => {
-    if (!token) return;
-    try {
-      await api.auth.mondayDisconnect(token);
-      const status = await api.auth.mondayStatus(token);
-      setMondayStatus(status);
-      toast.success("monday отключен");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Не удалось отключить monday");
-    }
-  };
-
   return (
     <AppShell
       lockLayout
@@ -464,26 +413,6 @@ export default function ChatPage() {
                 {settingsError}
               </div>
             )}
-            {!user?.mustChangePassword && (
-              <div className="pt-2 border-t border-border">
-                <div className="text-sm font-medium mb-1">Monday MCP</div>
-                {mondayLoading ? (
-                  <p className="text-xs text-muted-foreground">Проверка статуса подключения…</p>
-                ) : !mondayStatus?.enabled ? (
-                  <p className="text-xs text-muted-foreground">Интеграция monday отключена администратором.</p>
-                ) : mondayStatus?.connected ? (
-                  <div className="space-y-2">
-                    <p className="text-xs text-emerald-600">Подключено. Запросы про monday будут выполняться от вашего аккаунта.</p>
-                    <Button variant="outline" size="sm" onClick={disconnectMonday}>Отключить monday</Button>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <p className="text-xs text-muted-foreground">Подключите monday, чтобы ассистент мог читать и изменять ваши доски.</p>
-                    <Button variant="outline" size="sm" onClick={connectMonday}>Подключить monday</Button>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
           <DialogFooter>
             {!user?.mustChangePassword && (
@@ -531,9 +460,6 @@ function EmptyState() {
       <h2 className="font-display text-2xl font-semibold text-foreground mb-2">Orlanda Engineering HR Agent</h2>
       <p className="text-sm text-muted-foreground max-w-md mb-6">
         Это HR-агент Orlanda Engineering. Здесь можно задавать вопросы по бизнес-процессам и инженерным задачам.
-      </p>
-      <p className="text-sm text-muted-foreground max-w-md">
-        В настройках можно подключить ваш аккаунт Monday, чтобы работать с Monday прямо из чата.
       </p>
     </div>
   );

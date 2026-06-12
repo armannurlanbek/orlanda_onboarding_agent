@@ -81,68 +81,6 @@ class AuthSession(Base):
     )
 
 
-class MondayConnectionState(Base):
-    """Ephemeral OAuth challenge state (PKCE) for monday auth callback validation."""
-
-    __tablename__ = "monday_connection_states"
-    __table_args__ = (
-        Index("ix_monday_connection_states_user_id", "user_id"),
-        Index("ix_monday_connection_states_expires_at", "expires_at"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-    state: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    code_verifier: Mapped[str] = mapped_column(Text, nullable=False)
-    redirect_uri: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class MondayUserConnection(Base):
-    """Stored per-user monday OAuth tokens (encrypted)."""
-
-    __tablename__ = "monday_user_connections"
-    __table_args__ = (
-        Index("ix_monday_user_connections_user_id", "user_id"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
-    )
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        unique=True,
-    )
-    monday_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    monday_account_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    token_type: Mapped[str] = mapped_column(String(64), nullable=False, default="Bearer")
-    access_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
-    refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
-    scope: Mapped[str | None] = mapped_column(Text, nullable=True)
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 class DocumentIndexRecord(Base):
     """Document-level index state for incremental RAG updates."""
 

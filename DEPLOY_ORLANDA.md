@@ -163,15 +163,6 @@ Set:
 - `RAG_AGENT_SECRET_KEY=` generate once: `python3 -c "import secrets; print(secrets.token_hex(32))"`
 - leave `RAG_AGENT_ADMIN_USERNAMES`, `RAG_ALLOWED_EMAIL_DOMAIN`, `RAG_AGENT_MODEL`,
   `RAG_CORS_ALLOWED_ORIGINS=https://platform.n8norlanda.com` as provided.
-- Monday OAuth (if enabled): set `RAG_MONDAY_OAUTH_CLIENT_ID` / `RAG_MONDAY_OAUTH_CLIENT_SECRET`
-  from the Monday Developer Center, set `MONDAY_ENCRYPTION_KEY` (generate once, identical on
-  both servers), and set
-  `RAG_MONDAY_OAUTH_REDIRECT_URI=https://platform.n8norlanda.com/auth/monday/callback`.
-  This **must be the public https URL** (never a `192.168.x.x` / LAN / localhost address —
-  Monday bounces the browser there after Authorize and login silently fails) and it must
-  **byte-for-byte match** the redirect URL registered in the Monday app. Leave
-  `RAG_FRONTEND_BASE_URL` empty (same-origin relative redirect) or set it to
-  `https://platform.n8norlanda.com`.
   > ⚠ After changing any env var, recreate the container — `docker compose up -d
   > --force-recreate platform`. A plain `docker compose restart` does **not** re-read `.env`.
 

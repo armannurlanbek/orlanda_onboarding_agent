@@ -72,144 +72,10 @@ RAG_ENABLE_RATE_LIMIT_FALLBACK = os.environ.get("RAG_ENABLE_RATE_LIMIT_FALLBACK"
 }
 RAG_FALLBACK_MODEL = os.environ.get("RAG_FALLBACK_MODEL", "openai:gpt-4o-mini").strip()
 
-# Optional Monday MCP integration.
-RAG_ENABLE_MONDAY_MCP = os.environ.get("RAG_ENABLE_MONDAY_MCP", "false").strip().lower() in {
-    "1", "true", "yes", "on"
-}
-RAG_MONDAY_MCP_URL = os.environ.get("RAG_MONDAY_MCP_URL", "https://mcp.monday.com/mcp").strip()
-RAG_MONDAY_MCP_TRANSPORT = os.environ.get("RAG_MONDAY_MCP_TRANSPORT", "streamable_http").strip()
-RAG_MONDAY_MCP_TIMEOUT_SECONDS = int(os.environ.get("RAG_MONDAY_MCP_TIMEOUT_SECONDS", "25"))
-# Curated default Monday tool allowlist: read + safe-write tools an onboarding
-# agent actually needs. The full hosted catalog is ~36-40 tools, which bloats the
-# prompt and causes wrong-tool selection. Override via env:
-#   RAG_MONDAY_MCP_TOOL_ALLOWLIST="search,get_board_info,..."  -> explicit set
-#   RAG_MONDAY_MCP_TOOL_ALLOWLIST="*" (or "all")               -> disable allowlist
-#                                                                 (cap does filtering)
-RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST = frozenset({
-    # reads (7)
-    "get_user_context",
-    "get_board_info",
-    "get_board_items_page",
-    "search",
-    "get_column_type_info",
-    "get_updates",
-    "list_users_and_teams",
-    # safe writes (3)
-    "create_update",
-    "change_item_column_values",
-    "create_item",
-})
-
-
-def _parse_monday_tool_allowlist() -> set[str]:
-    """Resolve the Monday tool allowlist from env.
-
-    Unset/empty -> the curated default (10 tools). The sentinel ``*``/``all``
-    disables the allowlist so ``_cap_monday_tools`` does the filtering. Any other
-    value is parsed as a comma-separated explicit set.
-    """
-    raw = (os.environ.get("RAG_MONDAY_MCP_TOOL_ALLOWLIST") or "").strip()
-    if not raw:
-        return set(RAG_MONDAY_MCP_DEFAULT_TOOL_ALLOWLIST)
-    if raw.lower() in {"*", "all"}:
-        return set()
-    return {name.strip() for name in raw.split(",") if name.strip()}
-
-
-RAG_MONDAY_MCP_TOOL_ALLOWLIST = _parse_monday_tool_allowlist()
-# Safety-net cap (rarely fires now the allowlist is ~10). Kept so an explicit
-# wide/`*` allowlist still can't flood the model with the whole catalog.
-RAG_MONDAY_MCP_MAX_TOOLS = max(
-    1,
-    min(128, int(os.environ.get("RAG_MONDAY_MCP_MAX_TOOLS", "25"))),
-)
-
-# Monday OAuth token freshness.
-# Proactively refresh this many seconds before `expires_at` so a multi-step chat
-# turn never starts on a token about to expire (was a hard-coded 60s).
-RAG_MONDAY_TOKEN_REFRESH_LEEWAY_SECONDS = max(
-    30,
-    min(3600, int(os.environ.get("RAG_MONDAY_TOKEN_REFRESH_LEEWAY_SECONDS", "300"))),
-)
-# Fallback when Monday omits `expires_in` (no `expires_at` stored): refresh once the
-# token is older than this, so it still rotates instead of being used forever.
-RAG_MONDAY_TOKEN_MAX_AGE_SECONDS = max(
-    300,
-    min(86400, int(os.environ.get("RAG_MONDAY_TOKEN_MAX_AGE_SECONDS", "1800"))),
-)
-# Optional-parameter budget across selected monday tools. OFF by default (0).
-# The old default (22) was catastrophic: a single heavy tool
-# (get_board_items_page ~15 optional params) exhausted the budget and the greedy
-# walk DROPPED every tool after it, leaving the agent with ~6 mostly-write tools
-# and no way to search boards or read column ids. There is no real provider limit
-# this low. Set >0 only if a specific provider actually rejects the schema set.
-RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS = max(
-    0,
-    min(1000, int(os.environ.get("RAG_MONDAY_MCP_MAX_OPTIONAL_PARAMS", "0"))),
-)
-RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS = max(
-    30,
-    int(os.environ.get("RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS", "600")),
-)
-# Bounded retry for transient Monday MCP failures (connection reset / 5xx /
-# session-termination 500) on both tool loading and tool invocation. Keep small;
-# the goal is to ride out blips, not to hammer a degraded upstream.
-RAG_MONDAY_MCP_MAX_RETRIES = max(
-    0,
-    min(5, int(os.environ.get("RAG_MONDAY_MCP_MAX_RETRIES", "2"))),
-)
-# Base backoff (seconds) between retries; grows linearly with the attempt number.
-RAG_MONDAY_MCP_RETRY_BACKOFF_SECONDS = max(
-    0.0,
-    min(5.0, float(os.environ.get("RAG_MONDAY_MCP_RETRY_BACKOFF_SECONDS", "0.5"))),
-)
-RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS = os.environ.get(
-    "RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS",
-    "true",
-).strip().lower() in {"1", "true", "yes", "on"}
-# Reuse ONE MCP session for all tool calls within a single streaming chat turn
-# instead of opening a fresh short-lived HTTP session per tool call (the default
-# langchain-mcp-adapters behavior). A multi-step turn otherwise opens 15-30
-# sessions, each with its own connect+initialize+teardown — the main source of
-# "monday mcp is not stable". Only affects the async /chat/stream path; the sync
-# /chat path keeps per-call sessions. Set to false to disable (kill-switch) if the
-# persistent session ever misbehaves; it also falls back to per-call automatically
-# whenever a session cannot be established.
-RAG_MONDAY_MCP_PERSISTENT_SESSION = os.environ.get(
-    "RAG_MONDAY_MCP_PERSISTENT_SESSION",
-    "true",
-).strip().lower() in {"1", "true", "yes", "on"}
 RAG_MAX_AGENT_RECURSION_LIMIT = max(
     6,
     int(os.environ.get("RAG_MAX_AGENT_RECURSION_LIMIT", "12")),
 )
-RAG_MONDAY_MCP_OAUTH_ENABLED = os.environ.get("RAG_MONDAY_MCP_OAUTH_ENABLED", "true").strip().lower() in {
-    "1", "true", "yes", "on"
-}
-# When false (default): a CONNECTED monday user always has monday tools bound,
-# regardless of keyword intent — so phrasing never hides the tools. Set to true
-# as an opt-in to gate tools behind the keyword intent classifier instead.
-RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY = os.environ.get("RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY", "false").strip().lower() in {
-    "1", "true", "yes", "on"
-}
-# monday OAuth settings (hosted MCP user auth).
-RAG_MONDAY_OAUTH_CLIENT_ID = os.environ.get("RAG_MONDAY_OAUTH_CLIENT_ID", "").strip()
-RAG_MONDAY_OAUTH_CLIENT_SECRET = os.environ.get("RAG_MONDAY_OAUTH_CLIENT_SECRET", "").strip()
-RAG_MONDAY_OAUTH_REDIRECT_URI = os.environ.get("RAG_MONDAY_OAUTH_REDIRECT_URI", "").strip()
-RAG_MONDAY_OAUTH_AUTHORIZE_URL = os.environ.get(
-    "RAG_MONDAY_OAUTH_AUTHORIZE_URL",
-    "https://auth.monday.com/oauth2/authorize",
-).strip()
-RAG_MONDAY_OAUTH_TOKEN_URL = os.environ.get(
-    "RAG_MONDAY_OAUTH_TOKEN_URL",
-    "https://auth.monday.com/oauth2/token",
-).strip()
-RAG_MONDAY_OAUTH_SCOPES = os.environ.get("RAG_MONDAY_OAUTH_SCOPES", "").strip()
-RAG_MONDAY_OAUTH_STATE_TTL_SECONDS = max(
-    60,
-    int(os.environ.get("RAG_MONDAY_OAUTH_STATE_TTL_SECONDS", "600")),
-)
-MONDAY_ENCRYPTION_KEY = os.environ.get("MONDAY_ENCRYPTION_KEY", "").strip()
 
 # Persistent checkpointer: set CHECKPOINT_DB to a file path (e.g. ./data/checkpoints.db) for production
 CHECKPOINT_DB = os.environ.get("CHECKPOINT_DB", "").strip() or None
@@ -333,30 +199,13 @@ def _is_private_or_lan_url(url: str) -> bool:
 
 
 def warn_oauth_redirect_misconfig() -> None:
-    """Log (never raise) when OAuth/frontend URLs look like dev/LAN misconfig.
+    """Log (never raise) when the public frontend URL looks like dev/LAN misconfig.
 
-    Catches the classic "Authorize sends me to a 192.168.x.x address" bug early:
-    the Monday redirect_uri (sent to Monday at authorize time, and what the browser
-    is bounced back to) and the post-callback frontend redirect base must be your
-    PUBLIC https origin, never a private/LAN IP or plain http.
+    Catches the classic "redirect sends me to a 192.168.x.x address" bug early:
+    RAG_FRONTEND_BASE_URL must be your PUBLIC https origin, never a private/LAN IP
+    or plain http (or left empty to use a same-origin relative redirect).
     """
     log = logging.getLogger(__name__)
-    redirect = (RAG_MONDAY_OAUTH_REDIRECT_URI or "").strip()
-    if redirect:
-        if _is_private_or_lan_url(redirect):
-            log.warning(
-                "RAG_MONDAY_OAUTH_REDIRECT_URI points at a private/LAN/loopback address "
-                "(%s). Monday will bounce users' browsers there after Authorize and login "
-                "will fail. Set it to your public https callback, e.g. "
-                "https://platform.n8norlanda.com/auth/monday/callback (and register the same "
-                "URL in the Monday developer app).",
-                redirect,
-            )
-        elif redirect.lower().startswith("http://"):
-            log.warning(
-                "RAG_MONDAY_OAUTH_REDIRECT_URI uses plain http (%s); use https in production.",
-                redirect,
-            )
     if RAG_FRONTEND_BASE_URL:
         if _is_private_or_lan_url(RAG_FRONTEND_BASE_URL):
             log.warning(

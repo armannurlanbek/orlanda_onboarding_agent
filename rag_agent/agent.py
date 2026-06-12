@@ -19,12 +19,10 @@ from .config import (
     DATABASE_URL,
     MAX_TOKENS,
     MODEL_NAME,
-    RAG_ENABLE_MONDAY_MCP,
     RAG_AGENT_DIR,
     TEMPERATURE,
     TIMEOUT,
 )
-from .monday_auth import get_monday_mcp_tools_for_user
 from .rag_tool import retrieve_context
 
 logger = logging.getLogger(__name__)
@@ -34,17 +32,10 @@ _RUNTIME_SETTINGS_PATH = RAG_AGENT_DIR / "data" / "runtime_settings.json"
 
 
 def _load_system_prompt() -> str:
-    """Load base system prompt from YAML file (no Monday-tool claims)."""
+    """Load the system prompt from the YAML file."""
     with open(_SYSTEM_PROMPT_PATH, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return data["system_prompt"].strip()
-
-
-def _load_monday_tools_prompt() -> str:
-    """Load the Monday-tools guidance block appended only when Monday tools are bound."""
-    with open(_SYSTEM_PROMPT_PATH, encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    return str(data.get("monday_tools_prompt") or "").strip()
 
 
 _checkpointer_cm = None
@@ -330,7 +321,6 @@ def _bootstrap_active_model() -> None:
         return
 
 system_prompt = _load_system_prompt()
-monday_tools_prompt = _load_monday_tools_prompt()
 _bootstrap_active_model()
 
 
@@ -350,31 +340,15 @@ def build_agent(
     extra_tools: list | None = None,
     model_name: str | None = None,
     use_response_format: bool = False,
-    monday_username: str | None = None,
-    include_monday_tools: bool = False,
     include_retrieve_context: bool = True,
 ):
     tools = [retrieve_context] if include_retrieve_context else []
-    monday_tools_bound = False
-    if include_monday_tools and RAG_ENABLE_MONDAY_MCP and monday_username:
-        try:
-            monday_tools = get_monday_mcp_tools_for_user(monday_username)
-            if monday_tools:
-                tools.extend(monday_tools)
-                monday_tools_bound = True
-        except Exception:
-            logger.exception("Failed to load per-user monday MCP tools")
     if extra_tools:
         tools.extend(extra_tools)
-    # Prompt/tool agreement invariant: describe Monday tools IF AND ONLY IF Monday
-    # tools are actually bound for this request.
-    effective_system_prompt = system_prompt
-    if monday_tools_bound and monday_tools_prompt:
-        effective_system_prompt = f"{system_prompt}\n\n{monday_tools_prompt}"
     kwargs = {
         "model": _build_chat_model(model_name=model_name),
         "tools": tools,
-        "system_prompt": effective_system_prompt,
+        "system_prompt": system_prompt,
         "checkpointer": _get_checkpointer(),
         "context_schema": Context,
     }

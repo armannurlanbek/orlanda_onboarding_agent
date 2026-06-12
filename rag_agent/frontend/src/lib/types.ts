@@ -7,16 +7,6 @@ export type User = {
   mustChangePassword: boolean;
 };
 
-export type MondayConnectionStatus = {
-  enabled: boolean;
-  connected: boolean;
-  mondayUserId?: string | null;
-  mondayAccountId?: string | null;
-  scope?: string | null;
-  expiresAt?: string | null;
-  revoked?: boolean;
-};
-
 export type Source = {
   file: string;
   page?: number;

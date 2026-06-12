@@ -196,17 +196,6 @@ python -m rag_agent.import_json_users
 - `RAG_AGENT_MODEL` — активная модель чата (по умолчанию `anthropic:claude-sonnet-4-6`).
 - `ANTHROPIC_API_KEY` — обязателен, если `RAG_AGENT_MODEL` использует провайдера `anthropic`.
 - `OPENAI_API_KEY` — обязателен для RAG-эмбеддингов.
-- Monday MCP (per-user OAuth):
-  - `RAG_ENABLE_MONDAY_MCP=true` — включает интеграцию monday tools.
-  - `RAG_MONDAY_MCP_OAUTH_ENABLED=true` — включает OAuth-поток подключения пользователя.
-  - `RAG_MONDAY_MCP_URL` — hosted endpoint (по умолчанию `https://mcp.monday.com/mcp`).
-  - `RAG_MONDAY_MCP_TOOLS_CACHE_TTL_SECONDS` — TTL кэша monday tools (по умолчанию 600 сек; меньше сессий/terminate вызовов).
-  - `RAG_MONDAY_MCP_SUPPRESS_TERMINATION_500_WARNINGS` — скрыть известные non-fatal warning'и про session termination 500.
-  - `RAG_MONDAY_OAUTH_CLIENT_ID`, `RAG_MONDAY_OAUTH_CLIENT_SECRET`
-  - `RAG_MONDAY_OAUTH_REDIRECT_URI` — callback URL (например `https://your-domain/auth/monday/callback`).
-  - `MONDAY_ENCRYPTION_KEY` — ключ шифрования токенов monday в БД.
-  - `RAG_MONDAY_MCP_TOOL_ALLOWLIST` — CSV allowlist tool names (опционально).
-  - `RAG_MONDAY_MCP_USE_FOR_INTENT_ONLY=true` — добавлять Monday tools только когда запрос похож на monday-задачу.
 - `CHECKPOINT_BACKEND` — backend checkpointer (`postgres` по умолчанию, также `sqlite`/`memory`).
 - `CHECKPOINT_POSTGRES_URL` — optional DSN для checkpointer в PostgreSQL (если не задан, берется `DATABASE_URL`).
 - `CHECKPOINT_DB` — путь к SQLite-файлу, используется только при `CHECKPOINT_BACKEND=sqlite`.
@@ -226,13 +215,6 @@ python -m rag_agent.import_json_users
   - `RAG_RRF_K` — константа reciprocal rank fusion (обычно 50-100).
   - `RAG_ENABLE_CROSS_ENCODER_RERANK` — включить cross-encoder reranker (опционально).
   - `RAG_CROSS_ENCODER_MODEL` — модель cross-encoder (по умолчанию `cross-encoder/ms-marco-MiniLM-L-6-v2`).
-
-### Monday OAuth endpoints
-
-- `GET /auth/monday/status` — проверить, подключен ли monday для текущего пользователя.
-- `GET /auth/monday/start` — получить URL авторизации monday OAuth.
-- `GET /auth/monday/callback` — callback для завершения OAuth.
-- `POST /auth/monday/disconnect` — отключить monday для текущего пользователя.
 
 ## Бэкапы
 

@@ -6,8 +6,6 @@ from rag_agent.db.models import (
     DocumentChunk,
     DocumentIndexRecord,
     KnowledgeItemRecord,
-    MondayConnectionState,
-    MondayUserConnection,
     PdfMetadataRecord,
     User,
 )
@@ -20,8 +18,6 @@ __all__ = [
     "DocumentChunk",
     "DocumentIndexRecord",
     "KnowledgeItemRecord",
-    "MondayConnectionState",
-    "MondayUserConnection",
     "PdfMetadataRecord",
     "User",
     "get_db",
