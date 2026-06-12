@@ -169,6 +169,13 @@ RAG_MONDAY_API_VERSION = os.environ.get("RAG_MONDAY_API_VERSION", "").strip()
 RAG_MONDAY_TOKEN_ENC_KEY = os.environ.get("RAG_MONDAY_TOKEN_ENC_KEY", "").strip() or None
 # Backend OAuth callback route path; keep in sync with the route registered in api.py.
 MONDAY_OAUTH_CALLBACK_PATH = "/auth/monday/callback"
+# Higher agent step budget when monday tools are active: board/item workflows (discover
+# columns -> query items -> paginate, with occasional error-retries) need more tool round-trips
+# than RAG-only chats. Clamped to be at least the base limit.
+RAG_MONDAY_AGENT_RECURSION_LIMIT = max(
+    RAG_MAX_AGENT_RECURSION_LIMIT,
+    int(os.environ.get("RAG_MONDAY_AGENT_RECURSION_LIMIT", "40")),
+)
 
 
 def monday_enabled() -> bool:

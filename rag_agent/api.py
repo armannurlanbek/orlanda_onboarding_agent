@@ -50,6 +50,7 @@ from rag_agent.config import (
     RAG_FRONTEND_BASE_URL,
     RAG_LOG_FORMAT,
     RAG_MAX_AGENT_RECURSION_LIMIT,
+    RAG_MONDAY_AGENT_RECURSION_LIMIT,
     RAG_ENABLE_RATE_LIMIT_FALLBACK,
     RAG_FALLBACK_MODEL,
     RAG_HISTORY_KEEP_LAST_MESSAGES,
@@ -1869,6 +1870,9 @@ async def chat_stream(
             # this async path: MCP tools are async-only and the sync /chat path cannot execute
             # them. Empty when monday is off / the user has not connected.
             monday_tools = await aget_monday_tools_for_user(username)
+            if monday_tools:
+                # monday workflows are multi-step; give them a larger step budget.
+                config["recursion_limit"] = RAG_MONDAY_AGENT_RECURSION_LIMIT
             # build_agent only assembles the graph here; offloaded so the sync
             # build + history prep never stall the event loop.
             runtime_agent = await asyncio.to_thread(
