@@ -147,7 +147,7 @@ export default function AdminLogsPage() {
         </div>
 
         <div className="space-y-2">
-          <h1 className="font-display text-3xl font-semibold text-foreground">Журнал диалогов</h1>
+          <h1 className="font-display text-3xl font-semibold tracking-tight text-foreground">Журнал диалогов</h1>
           <div className="flex items-center gap-2 text-sm">
             <Link to="/admin/logs" className="font-medium text-foreground">Журнал диалогов</Link>
             <span className="text-muted-foreground">·</span>
@@ -291,7 +291,7 @@ export default function AdminLogsPage() {
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setSettingsOpen(false)} disabled={changingPassword}>Отмена</Button>
-            <Button onClick={submitPasswordChange} className="btn-gradient" disabled={changingPassword}>
+            <Button onClick={submitPasswordChange} disabled={changingPassword}>
               {changingPassword ? "Сохранение..." : "Сменить пароль"}
             </Button>
           </DialogFooter>

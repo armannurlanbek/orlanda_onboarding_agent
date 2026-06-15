@@ -9,8 +9,8 @@ import { Logo } from "@/components/Logo";
 
 export default function ComponentsPage() {
   return (
-    <div className="min-h-screen bg-gradient-surface">
-      <header className="border-b border-border bg-card/80 backdrop-blur sticky top-0 z-10">
+    <div className="min-h-screen bg-muted/40">
+      <header className="border-b border-border bg-card/85 backdrop-blur sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
           <Logo />
           <Link to="/chat" className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
@@ -21,7 +21,7 @@ export default function ComponentsPage() {
 
       <div className="max-w-5xl mx-auto px-6 py-10 space-y-12">
         <div>
-          <h1 className="font-display text-4xl font-semibold text-foreground">Дизайн-система</h1>
+          <h1 className="font-display text-4xl font-semibold tracking-tight text-foreground">Дизайн-система</h1>
           <p className="text-muted-foreground mt-1">Токены и компоненты Orlanda Knowledge AI · для инженерной передачи</p>
         </div>
 
@@ -39,9 +39,8 @@ export default function ComponentsPage() {
               { n: "destructive", c: "bg-destructive" },
               { n: "success", c: "bg-success" },
               { n: "warning", c: "bg-warning" },
-              { n: "gradient-primary", c: "bg-gradient-primary" },
             ].map((t) => (
-              <div key={t.n} className="rounded-xl overflow-hidden border border-border">
+              <div key={t.n} className="rounded-lg overflow-hidden border border-border">
                 <div className={`h-16 ${t.c}`} />
                 <div className="px-3 py-2 text-xs font-mono text-foreground bg-card">{t.n}</div>
               </div>
@@ -51,8 +50,8 @@ export default function ComponentsPage() {
 
         <Section title="Типографика">
           <div className="space-y-2">
-            <div className="font-display text-4xl font-semibold">Display 4xl · Source Serif</div>
-            <div className="font-display text-2xl font-semibold">Display 2xl</div>
+            <div className="font-display text-4xl font-semibold tracking-tight">Display 4xl · Inter Tight</div>
+            <div className="font-display text-2xl font-semibold tracking-tight">Display 2xl</div>
             <div className="text-base text-foreground">Body Inter — основной текст интерфейса</div>
             <div className="text-sm text-muted-foreground">Caption · вспомогательный muted-foreground</div>
             <code className="text-xs font-mono bg-muted rounded px-2 py-1">monospace · код и техн. метки</code>
@@ -61,7 +60,7 @@ export default function ComponentsPage() {
 
         <Section title="Кнопки">
           <div className="flex flex-wrap gap-3">
-            <Button className="btn-gradient">Primary</Button>
+            <Button>Primary</Button>
             <Button variant="secondary">Secondary</Button>
             <Button variant="outline">Outline</Button>
             <Button variant="ghost">Ghost</Button>
@@ -91,7 +90,7 @@ export default function ComponentsPage() {
               <Skeleton className="h-4 w-full" />
               <Skeleton className="h-4 w-3/4" />
             </div>
-            <div className="rounded-xl border border-dashed border-border p-6 text-center">
+            <div className="rounded-lg border border-dashed border-border p-6 text-center">
               <Sparkles className="h-6 w-6 mx-auto text-primary mb-2" />
               <div className="font-medium">Пусто</div>
               <div className="text-sm text-muted-foreground">Создайте первый элемент</div>
@@ -114,8 +113,8 @@ export default function ComponentsPage() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="space-y-4">
-      <h2 className="font-display text-2xl font-semibold text-foreground">{title}</h2>
-      <div className="surface-card rounded-xl p-6">{children}</div>
+      <h2 className="font-display text-2xl font-semibold tracking-tight text-foreground">{title}</h2>
+      <div className="surface-card rounded-lg p-6">{children}</div>
     </section>
   );
 }

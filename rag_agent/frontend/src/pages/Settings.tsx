@@ -93,9 +93,9 @@ export default function SettingsPage() {
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
-      <header className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-md">
+      <header className="sticky top-0 z-40 border-b border-border bg-card/85 backdrop-blur-md">
         <div className="px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
-          <Link to="/chat" aria-label="На главную"><Logo /></Link>
+          <Link to="/chat" aria-label="На главную" className="shrink-0"><Logo /></Link>
           <Button variant="ghost" size="sm" asChild>
             <Link to="/chat"><ArrowLeft className="h-4 w-4" /> В чат</Link>
           </Button>
@@ -105,8 +105,8 @@ export default function SettingsPage() {
       <main className="flex-1 px-4 sm:px-6 py-8">
         <div className="mx-auto max-w-2xl space-y-6">
           <div>
-            <h1 className="text-2xl font-semibold">Интеграции</h1>
-            <p className="text-sm text-muted-foreground">Подключите внешние сервисы к ассистенту.</p>
+            <h1 className="font-display text-2xl font-semibold tracking-tight">Интеграции</h1>
+            <p className="text-sm text-muted-foreground mt-1">Подключите внешние сервисы к ассистенту.</p>
           </div>
 
           <Card>

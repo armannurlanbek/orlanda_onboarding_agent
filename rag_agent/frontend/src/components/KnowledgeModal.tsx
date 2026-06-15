@@ -141,7 +141,7 @@ export function KnowledgeModal({ open, onOpenChange }: { open: boolean; onOpenCh
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-6xl w-[95vw] h-[90vh] p-0 gap-0 flex flex-col">
           <DialogHeader className="px-6 py-4 border-b border-border">
-            <DialogTitle className="font-display text-xl">Документы в базе знаний</DialogTitle>
+            <DialogTitle className="font-display text-xl tracking-tight">Документы в базе знаний</DialogTitle>
           </DialogHeader>
 
           <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_1.2fr] overflow-hidden">
@@ -152,7 +152,7 @@ export function KnowledgeModal({ open, onOpenChange }: { open: boolean; onOpenCh
                   onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
                   onDragLeave={() => setDragOver(false)}
                   onDrop={(e) => { e.preventDefault(); setDragOver(false); onUpload(e.dataTransfer.files); }}
-                  className={`rounded-xl border-2 border-dashed p-5 text-center cursor-pointer transition-colors ${dragOver ? "border-primary bg-primary/5" : "border-border hover:border-primary/40 hover:bg-muted/50"}`}
+                  className={`rounded-lg border-2 border-dashed p-5 text-center cursor-pointer transition-colors ${dragOver ? "border-primary bg-accent" : "border-border hover:border-primary/40 hover:bg-muted/50"}`}
                   onClick={() => fileRef.current?.click()}
                 >
                   <Upload className="h-6 w-6 mx-auto text-muted-foreground mb-2" />
@@ -163,7 +163,7 @@ export function KnowledgeModal({ open, onOpenChange }: { open: boolean; onOpenCh
               </div>
 
               <div className="flex-1 overflow-auto px-2 pb-4">
-                <div className="px-2 py-2 text-xs font-medium text-muted-foreground uppercase tracking-wider">PDF документы</div>
+                <div className="px-2 py-2 text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.08em]">PDF документы</div>
                 {pdfs === null ? (
                   <div className="space-y-2 px-2">{[...Array(3)].map((_, i) => <Skeleton key={i} className="h-14 w-full" />)}</div>
                 ) : pdfs.length === 0 ? (
@@ -195,7 +195,7 @@ export function KnowledgeModal({ open, onOpenChange }: { open: boolean; onOpenCh
                 )}
 
                 <div className="mt-6 px-2 py-2 flex items-center justify-between">
-                  <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Текстовые блоки</div>
+                  <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.08em]">Текстовые блоки</div>
                   <Button size="sm" variant="ghost" onClick={openNewBlock}><Plus className="h-3.5 w-3.5" /> Новый</Button>
                 </div>
                 {blocks === null ? (
@@ -225,12 +225,12 @@ export function KnowledgeModal({ open, onOpenChange }: { open: boolean; onOpenCh
             {/* RIGHT */}
             <div className="flex flex-col overflow-hidden">
               <div className="flex-1 overflow-auto p-6 space-y-4">
-                <div className="rounded-xl border border-border bg-muted/40 aspect-[4/3] flex items-center justify-center text-muted-foreground">
+                <div className="rounded-lg border border-border bg-muted/40 aspect-[4/3] flex items-center justify-center text-muted-foreground">
                   {selected && previewUrl ? (
                     <iframe
                       src={previewUrl}
                       title={`Предпросмотр ${selected.name}`}
-                      className="h-full w-full rounded-xl border-0"
+                      className="h-full w-full rounded-lg border-0"
                     />
                   ) : selected ? (
                     <div className="text-center">
@@ -253,7 +253,7 @@ export function KnowledgeModal({ open, onOpenChange }: { open: boolean; onOpenCh
                     </div>
                     <Textarea id="rag" value={ragText} onChange={(e) => setRagText(e.target.value)} className="min-h-[160px] font-mono text-xs" />
                     <div className="flex justify-end">
-                      <Button size="sm" onClick={onSaveRag} className="btn-gradient">Сохранить</Button>
+                      <Button size="sm" onClick={onSaveRag}>Сохранить</Button>
                     </div>
                   </div>
                 )}
@@ -288,7 +288,7 @@ export function KnowledgeModal({ open, onOpenChange }: { open: boolean; onOpenCh
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setNewBlockOpen(false)}>Отмена</Button>
-            <Button onClick={saveBlock} className="btn-gradient">Сохранить</Button>
+            <Button onClick={saveBlock}>Сохранить</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

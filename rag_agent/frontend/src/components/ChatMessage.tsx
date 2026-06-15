@@ -11,7 +11,7 @@ export function ChatMessage({ message }: { message: Message }) {
   if (isUser) {
     return (
       <div className="flex justify-end animate-fade-in">
-        <div className="max-w-[80%] rounded-xl rounded-tr-sm bg-gradient-primary text-primary-foreground px-4 py-2.5 shadow-soft">
+        <div className="max-w-[80%] rounded-lg rounded-tr-sm bg-primary text-primary-foreground px-4 py-2.5 shadow-soft">
           <div className="text-sm whitespace-pre-wrap leading-relaxed">{message.content}</div>
         </div>
       </div>
@@ -20,11 +20,11 @@ export function ChatMessage({ message }: { message: Message }) {
 
   return (
     <div className="flex gap-3 animate-fade-in">
-      <div className="h-8 w-8 rounded-lg bg-accent text-accent-foreground flex items-center justify-center shrink-0">
+      <div className="h-8 w-8 rounded-md bg-accent flex items-center justify-center shrink-0 ring-1 ring-border">
         <Sparkles className="h-4 w-4 text-primary" />
       </div>
       <div className="flex-1 max-w-[80%] space-y-2 min-w-0">
-        <div className="rounded-xl rounded-tl-sm bg-card border border-border px-4 py-3 shadow-soft overflow-hidden">
+        <div className="rounded-lg rounded-tl-sm bg-card border border-border px-4 py-3 shadow-soft overflow-hidden">
           <MarkdownLite text={message.content} />
         </div>
 
@@ -65,10 +65,10 @@ export function ChatMessage({ message }: { message: Message }) {
 export function TypingIndicator() {
   return (
     <div className="flex gap-3 animate-fade-in">
-      <div className="h-8 w-8 rounded-lg bg-accent flex items-center justify-center shrink-0">
+      <div className="h-8 w-8 rounded-md bg-accent flex items-center justify-center shrink-0 ring-1 ring-border">
         <Sparkles className="h-4 w-4 text-primary" />
       </div>
-      <div className="rounded-xl rounded-tl-sm bg-card border border-border px-4 py-3 shadow-soft">
+      <div className="rounded-lg rounded-tl-sm bg-card border border-border px-4 py-3 shadow-soft">
         <div className="flex items-center gap-1.5">
           <span className="typing-dot" /><span className="typing-dot" /><span className="typing-dot" />
         </div>

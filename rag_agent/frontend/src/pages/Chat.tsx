@@ -207,12 +207,12 @@ export default function ChatPage() {
   const ConvList = (
     <div className="flex flex-col h-full">
       <div className="p-3">
-        <Button onClick={() => setNewOpen(true)} className="w-full btn-gradient justify-start" disabled={Boolean(user?.mustChangePassword)}>
+        <Button onClick={() => setNewOpen(true)} className="w-full justify-start" disabled={Boolean(user?.mustChangePassword)}>
           <MessageSquarePlus className="h-4 w-4" /> Новый диалог
         </Button>
       </div>
       <div className="flex-1 overflow-auto px-2 pb-3">
-        <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">Диалоги</div>
+        <div className="px-2 py-1.5 text-[11px] font-semibold text-muted-foreground uppercase tracking-[0.08em]">Диалоги</div>
         {conversations === null ? (
           <div className="space-y-2 px-2">{[...Array(3)].map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}</div>
         ) : conversations.length === 0 ? (
@@ -302,7 +302,7 @@ export default function ChatPage() {
       <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[280px_1fr] overflow-hidden">
         <aside className="hidden lg:block min-h-0 border-r border-border bg-sidebar overflow-hidden">{ConvList}</aside>
 
-        <section className="flex min-h-0 flex-col overflow-hidden bg-gradient-surface">
+        <section className="flex min-h-0 flex-col overflow-hidden bg-background">
           <div className="lg:hidden border-b border-border bg-card px-4 py-2 flex items-center justify-between">
             <Sheet open={mobileSheet} onOpenChange={setMobileSheet}>
               <SheetTrigger asChild>
@@ -344,7 +344,7 @@ export default function ChatPage() {
                   disabled={!activeId || sending || Boolean(user?.mustChangePassword)}
                   className="min-h-[52px] max-h-[160px] resize-none"
                 />
-                <Button onClick={() => send()} disabled={!activeId || sending || !input.trim() || Boolean(user?.mustChangePassword)} className="btn-gradient h-[52px] px-5">
+                <Button onClick={() => send()} disabled={!activeId || sending || !input.trim() || Boolean(user?.mustChangePassword)} className="h-[52px] px-5">
                   <Send className="h-4 w-4" />
                 </Button>
               </div>
@@ -420,7 +420,7 @@ export default function ChatPage() {
                 Отмена
               </Button>
             )}
-            <Button onClick={submitPasswordChange} className="btn-gradient" disabled={changingPassword}>
+            <Button onClick={submitPasswordChange} disabled={changingPassword}>
               {changingPassword ? "Сохранение..." : "Сменить пароль"}
             </Button>
           </DialogFooter>
@@ -443,7 +443,7 @@ export default function ChatPage() {
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setNewOpen(false)}>Отмена</Button>
-            <Button onClick={() => void createConv()} className="btn-gradient">Создать</Button>
+            <Button onClick={() => void createConv()}>Создать</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -453,12 +453,12 @@ export default function ChatPage() {
 
 function EmptyState() {
   return (
-    <div className="flex flex-col items-center text-center pt-12 pb-6">
-      <div className="h-14 w-14 rounded-2xl bg-gradient-primary shadow-glow flex items-center justify-center mb-4">
-        <Sparkles className="h-7 w-7 text-primary-foreground" />
+    <div className="flex flex-col items-center text-center pt-16 pb-6">
+      <div className="h-14 w-14 rounded-xl bg-accent ring-1 ring-border flex items-center justify-center mb-5">
+        <Sparkles className="h-7 w-7 text-primary" />
       </div>
-      <h2 className="font-display text-2xl font-semibold text-foreground mb-2">Orlanda Engineering HR Agent</h2>
-      <p className="text-sm text-muted-foreground max-w-md mb-6">
+      <h2 className="font-display text-2xl font-semibold tracking-tight text-foreground mb-2">Orlanda Engineering HR Agent</h2>
+      <p className="text-sm leading-relaxed text-muted-foreground max-w-md mb-6">
         Это HR-агент Orlanda Engineering. Здесь можно задавать вопросы по бизнес-процессам и инженерным задачам.
       </p>
     </div>

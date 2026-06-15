@@ -18,11 +18,11 @@ export function AppShell({ onOpenKnowledge, onOpenSettings, children, lockLayout
 
   return (
     <div className={`min-h-screen flex flex-col bg-background ${lockLayout ? "h-screen overflow-hidden" : ""}`}>
-      <header className="sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-md">
+      <header className="sticky top-0 z-40 border-b border-border bg-card/85 backdrop-blur-md">
         <div className="px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
-          <Link to="/chat" aria-label="На главную"><Logo /></Link>
+          <Link to="/chat" aria-label="На главную" className="shrink-0"><Logo /></Link>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <Button variant="ghost" size="sm" onClick={onOpenKnowledge} className="hidden sm:inline-flex">
               <BookOpen className="h-4 w-4" /> Документы
             </Button>
@@ -30,10 +30,10 @@ export function AppShell({ onOpenKnowledge, onOpenSettings, children, lockLayout
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="sm" className="gap-2">
-                  <div className="h-7 w-7 rounded-full bg-gradient-primary text-primary-foreground flex items-center justify-center text-xs font-semibold">
+                  <div className="h-7 w-7 rounded-md bg-primary text-primary-foreground flex items-center justify-center text-xs font-semibold">
                     {user?.displayName?.[0] ?? "U"}
                   </div>
-                  <span className="hidden sm:inline text-sm">{user?.displayName}</span>
+                  <span className="hidden sm:inline text-sm font-medium">{user?.displayName}</span>
                   <ChevronDown className="h-3.5 w-3.5 opacity-60" />
                 </Button>
               </DropdownMenuTrigger>

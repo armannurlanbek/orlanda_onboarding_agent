@@ -37,11 +37,11 @@ export default function AuthPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-surface flex items-center justify-center p-4">
+    <div className="min-h-screen bg-muted/40 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         <div className="flex justify-center mb-8"><Logo /></div>
-        <div className="surface-card rounded-xl p-8 shadow-elevated animate-fade-in">
-          <h1 className="font-display text-2xl font-semibold text-foreground mb-1">Добро пожаловать</h1>
+        <div className="surface-card rounded-lg p-8 shadow-elevated animate-fade-in">
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-foreground mb-1">Добро пожаловать</h1>
           <p className="text-sm text-muted-foreground mb-6">Внутренний AI-ассистент Orlanda Engineering</p>
 
           <Tabs value={mode} onValueChange={(v) => { setMode(v as "login" | "register"); setError(null); }}>
@@ -60,7 +60,7 @@ export default function AuthPage() {
                   <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} />
                 </div>
                 {error && <div role="alert" className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2">{error}</div>}
-                <Button type="submit" className="w-full btn-gradient" disabled={loading}>
+                <Button type="submit" className="w-full" disabled={loading}>
                   {loading && <Loader2 className="h-4 w-4 animate-spin" />}
                   {mode === "login" ? "Войти" : "Создать аккаунт"}
                 </Button>

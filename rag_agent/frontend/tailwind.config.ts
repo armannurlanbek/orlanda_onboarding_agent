@@ -8,7 +8,7 @@ export default {
     container: { center: true, padding: "2rem", screens: { "2xl": "1400px" } },
     extend: {
       fontFamily: {
-        display: ["'Source Serif 4'", "Georgia", "serif"],
+        display: ["Inter", "system-ui", "sans-serif"],
         sans: ["Inter", "system-ui", "sans-serif"],
       },
       colors: {
@@ -42,19 +42,17 @@ export default {
         },
       },
       backgroundImage: {
-        "gradient-primary": "var(--gradient-primary)",
         "gradient-surface": "var(--gradient-surface)",
       },
       boxShadow: {
         soft: "var(--shadow-sm)",
         elevated: "var(--shadow-md)",
         floating: "var(--shadow-lg)",
-        glow: "var(--shadow-glow)",
       },
       borderRadius: {
         lg: "var(--radius)",
-        md: "calc(var(--radius) - 4px)",
-        sm: "calc(var(--radius) - 8px)",
+        md: "calc(var(--radius) - 2px)",
+        sm: "calc(var(--radius) - 4px)",
         xl: "calc(var(--radius) + 4px)",
       },
       keyframes: {
