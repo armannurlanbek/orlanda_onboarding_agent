@@ -26,6 +26,7 @@ from rag_agent.agent import (
     Context,
     build_agent,
     close_checkpointer,
+    compose_system_prompt_suffix,
     delete_conversation_state,
     get_active_model_name,
     get_base_agent,
@@ -34,6 +35,7 @@ from rag_agent.agent import (
 )
 from rag_agent.auth import (
     change_password as auth_change_password,
+    get_user_id,
     get_user_role,
     get_user_auth_flags,
     invalidate_token,
@@ -43,6 +45,8 @@ from rag_agent.auth import (
     register as auth_register,
     resolve_token,
 )
+from rag_agent import user_memory
+from rag_agent.memory_tools import get_memory_tools_for_user
 from rag_agent.config import (
     API_HOST,
     API_PORT,
@@ -58,12 +62,14 @@ from rag_agent.config import (
     RAG_AGENT_DIR,
     RAG_MAX_HISTORY_MESSAGES,
     RAG_MAX_PASSWORD_LENGTH,
+    RAG_MAX_USER_MEMORIES,
     RAG_MAX_USER_MESSAGE_CHARS,
     RAG_MIN_PASSWORD_LENGTH,
     RAG_RATE_LIMIT_CHAT,
     RAG_RATE_LIMIT_LOGIN,
     RAG_RATE_LIMIT_REGISTER,
     RAG_USERNAME_MAX_LEN,
+    memory_enabled,
     monday_enabled,
     require_runtime_keys,
     warn_oauth_redirect_misconfig,
@@ -268,6 +274,19 @@ class AdminLogReviewUpdate(BaseModel):
 
 class AdminModelUpdate(BaseModel):
     model: str = Field(..., min_length=1, max_length=256)
+
+
+class MemoryCreate(BaseModel):
+    content: str = Field(..., min_length=1, max_length=4000)
+    category: str = Field(default="fact", max_length=16)
+
+
+class MemoryUpdate(BaseModel):
+    content: str = Field(..., min_length=1, max_length=4000)
+
+
+class MemorySettingsUpdate(BaseModel):
+    enabled: bool
 
 
 @asynccontextmanager
@@ -1229,6 +1248,176 @@ def me(authorization: str | None = Header(default=None)):
     }
 
 
+# ── Long-term user memory ────────────────────────────────────────────────────
+def _resolve_user_id_or_404(username: str):
+    """Resolve a username to its user id, or raise 404."""
+    uid = get_user_id(username)
+    if uid is None:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    return uid
+
+
+def _add_memory_or_error(uid, content: str, category: str, source: str) -> dict:
+    """Shared add path that maps the store status to HTTP errors."""
+    res = user_memory.add_memory(uid, content, category, source=source)
+    status = res.get("status")
+    if status == "full":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Достигнут лимит памяти ({RAG_MAX_USER_MEMORIES}). Удалите ненужные записи.",
+        )
+    if status == "invalid":
+        raise HTTPException(status_code=400, detail="Пустой или некорректный текст памяти")
+    return res["memory"]
+
+
+@app.get("/memories")
+def memories_list(authorization: str | None = Header(default=None)):
+    """List the current user's long-term memories."""
+    username = _get_username(authorization)
+    uid = _resolve_user_id_or_404(username)
+    return {"memories": user_memory.list_memories(uid)}
+
+
+@app.post("/memories")
+def memories_add(body: MemoryCreate, authorization: str | None = Header(default=None)):
+    """Add a memory manually (source=user)."""
+    username = _get_username(authorization)
+    uid = _resolve_user_id_or_404(username)
+    memory = _add_memory_or_error(uid, body.content, body.category, source="user")
+    return {"ok": True, "memory": memory}
+
+
+@app.patch("/memories/{handle}")
+def memories_update(handle: str, body: MemoryUpdate, authorization: str | None = Header(default=None)):
+    """Edit one of the current user's memories."""
+    username = _get_username(authorization)
+    uid = _resolve_user_id_or_404(username)
+    memory = user_memory.update_memory(uid, handle, body.content)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Запись памяти не найдена")
+    return {"ok": True, "memory": memory}
+
+
+@app.delete("/memories/{handle}")
+def memories_delete(handle: str, authorization: str | None = Header(default=None)):
+    """Delete one of the current user's memories."""
+    username = _get_username(authorization)
+    uid = _resolve_user_id_or_404(username)
+    if not user_memory.delete_memory(uid, handle):
+        raise HTTPException(status_code=404, detail="Запись памяти не найдена")
+    return {"ok": True}
+
+
+@app.delete("/memories")
+def memories_clear(authorization: str | None = Header(default=None)):
+    """Delete all of the current user's memories."""
+    username = _get_username(authorization)
+    uid = _resolve_user_id_or_404(username)
+    return {"ok": True, "deleted": user_memory.clear_memories(uid)}
+
+
+@app.get("/me/memory-settings")
+def memory_settings_get(authorization: str | None = Header(default=None)):
+    """Return the current user's memory toggle and the global kill-switch state."""
+    username = _get_username(authorization)
+    uid = _resolve_user_id_or_404(username)
+    return {
+        "enabled": user_memory.get_memory_enabled(uid),
+        "globally_enabled": memory_enabled(),
+    }
+
+
+@app.put("/me/memory-settings")
+def memory_settings_put(body: MemorySettingsUpdate, authorization: str | None = Header(default=None)):
+    """Turn the current user's long-term memory on/off."""
+    username = _get_username(authorization)
+    uid = _resolve_user_id_or_404(username)
+    return {
+        "enabled": user_memory.set_memory_enabled(uid, body.enabled),
+        "globally_enabled": memory_enabled(),
+    }
+
+
+@app.get("/admin/users/{target_username}/memories")
+def admin_memories_list(target_username: str, authorization: str | None = Header(default=None)):
+    """Admin: view any user's memories."""
+    _require_admin(authorization)
+    uid = _resolve_user_id_or_404(target_username)
+    return {
+        "username": target_username,
+        "enabled": user_memory.get_memory_enabled(uid),
+        "memories": user_memory.list_memories(uid),
+    }
+
+
+@app.post("/admin/users/{target_username}/memories")
+def admin_memories_add(
+    target_username: str,
+    body: MemoryCreate,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Admin: add a memory to a user (source=admin)."""
+    admin_username = _require_admin(authorization)
+    uid = _resolve_user_id_or_404(target_username)
+    memory = _add_memory_or_error(uid, body.content, body.category, source="admin")
+    write_audit(
+        "memory.admin_add",
+        admin_username,
+        target=target_username,
+        details={"memory_id": memory["id"], "category": memory["category"]},
+        ip_address=request.client.host if request.client else "",
+    )
+    return {"ok": True, "memory": memory}
+
+
+@app.patch("/admin/users/{target_username}/memories/{handle}")
+def admin_memories_update(
+    target_username: str,
+    handle: str,
+    body: MemoryUpdate,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Admin: edit a user's memory."""
+    admin_username = _require_admin(authorization)
+    uid = _resolve_user_id_or_404(target_username)
+    memory = user_memory.update_memory(uid, handle, body.content)
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Запись памяти не найдена")
+    write_audit(
+        "memory.admin_update",
+        admin_username,
+        target=target_username,
+        details={"memory_id": handle},
+        ip_address=request.client.host if request.client else "",
+    )
+    return {"ok": True, "memory": memory}
+
+
+@app.delete("/admin/users/{target_username}/memories/{handle}")
+def admin_memories_delete(
+    target_username: str,
+    handle: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Admin: delete a user's memory."""
+    admin_username = _require_admin(authorization)
+    uid = _resolve_user_id_or_404(target_username)
+    if not user_memory.delete_memory(uid, handle):
+        raise HTTPException(status_code=404, detail="Запись памяти не найдена")
+    write_audit(
+        "memory.admin_delete",
+        admin_username,
+        target=target_username,
+        details={"memory_id": handle},
+        ip_address=request.client.host if request.client else "",
+    )
+    return {"ok": True}
+
+
 @app.post("/admin/users/provision")
 def admin_user_provision(
     request: Request,
@@ -1636,10 +1825,13 @@ def chat(
         # and this sync endpoint executes tools synchronously via runtime_agent.invoke(), which
         # cannot drive a coroutine-only tool. The UI uses /chat/stream (async), which injects
         # them. A programmatic caller of /chat gets the RAG-only agent.
-        extra_tools = []
         selected_model_name: str | None = None
 
         thread_id = _make_thread_id(username, conversation_id)
+        # Long-term memory tools ARE sync, so (unlike monday) they work on this path too.
+        user_id = get_user_id(username)
+        extra_tools = list(get_memory_tools_for_user(user_id, thread_id=thread_id)) if user_id else []
+        memory_suffix = user_memory.build_memory_block(user_id) if user_id else None
         config = {
             "configurable": {"thread_id": thread_id},
             "recursion_limit": RAG_MAX_AGENT_RECURSION_LIMIT,
@@ -1647,6 +1839,7 @@ def chat(
         runtime_agent = build_agent(
             extra_tools=extra_tools,
             model_name=selected_model_name,
+            system_prompt_suffix=memory_suffix,
         )
         repaired = _repair_conversation_history_for_provider(runtime_agent, config)
         if repaired:
@@ -1706,6 +1899,7 @@ def chat(
                     extra_tools=extra_tools,
                     model_name=selected_model_name,
                     use_response_format=False,
+                    system_prompt_suffix=memory_suffix,
                 )
                 retry_response = unstructured_agent.invoke(
                     {"messages": [{"role": "user", "content": user_message}]},
@@ -1751,6 +1945,7 @@ def chat(
                 fallback_agent = build_agent(
                     extra_tools=extra_tools,
                     model_name=RAG_FALLBACK_MODEL,
+                    system_prompt_suffix=memory_suffix,
                 )
                 response = fallback_agent.invoke(
                     {"messages": [{"role": "user", "content": user_message}]},
@@ -1873,12 +2068,25 @@ async def chat_stream(
             if monday_tools:
                 # monday workflows are multi-step; give them a larger step budget.
                 config["recursion_limit"] = RAG_MONDAY_AGENT_RECURSION_LIMIT
+            # Long-term memory: sync tools + the injected memory block. Offloaded to a thread
+            # so the sync DB IO doesn't stall the event loop. Empty/None when memory is off.
+            user_id = get_user_id(username)
+            memory_tools = (
+                await asyncio.to_thread(get_memory_tools_for_user, user_id, thread_id)
+                if user_id else []
+            )
+            memory_suffix = (
+                await asyncio.to_thread(user_memory.build_memory_block, user_id)
+                if user_id else None
+            )
             # build_agent only assembles the graph here; offloaded so the sync
             # build + history prep never stall the event loop.
             runtime_agent = await asyncio.to_thread(
                 build_agent,
-                extra_tools=monday_tools,
-                system_prompt_suffix=(monday_system_prompt if monday_tools else None),
+                extra_tools=[*memory_tools, *monday_tools],
+                system_prompt_suffix=compose_system_prompt_suffix(
+                    memory_suffix, monday_system_prompt if monday_tools else None
+                ),
             )
             try:
                 if await asyncio.to_thread(_repair_conversation_history_for_provider, runtime_agent, config):

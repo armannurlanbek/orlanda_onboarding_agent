@@ -35,10 +35,13 @@ export default defineConfig(({ mode }) => ({
       "/chat": { target: apiTarget, changeOrigin: true, bypass: bypassSpaNavigation },
       "/knowledge": { target: apiTarget, changeOrigin: true },
       "/integrations": { target: apiTarget, changeOrigin: true },
+      "/memories": { target: apiTarget, changeOrigin: true },
+      "/me/memory-settings": { target: apiTarget, changeOrigin: true },
       "/branding": { target: apiTarget, changeOrigin: true },
       "/health": { target: apiTarget, changeOrigin: true },
       "/admin/logs": { target: apiTarget, changeOrigin: true, bypass: bypassSpaNavigation },
       "/admin/documents/metadata": { target: apiTarget, changeOrigin: true },
+      "/admin/users": { target: apiTarget, changeOrigin: true },
       "/admin/model": { target: apiTarget, changeOrigin: true },
     },
     hmr: {

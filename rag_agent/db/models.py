@@ -40,6 +40,8 @@ class User(Base):
     # "admin" | "user" — keep as string for simple migrations when adding roles later.
     role: Mapped[str] = mapped_column(String(16), nullable=False, default="user")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Per-user toggle for long-term cross-conversation memory (see UserMemory). Default on.
+    memory_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     temp_password_issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -232,6 +234,54 @@ class UserMondayToken(Base):
     # Optional display metadata fetched from monday at connect time.
     monday_account_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     monday_user_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class UserMemory(Base):
+    """One long-term memory about a user, persisted across all their conversations.
+
+    The agent writes these via tools (save/update/delete_memory); users and admins can also
+    manage them. All of a user's memories are injected into the system prompt each turn (see
+    rag_agent.user_memory.build_memory_block). The ``embedding`` column is intentionally
+    nullable and unused in v1 — it is the upgrade hook for switching from wholesale injection
+    to semantic top-k retrieval later, without a schema migration.
+    """
+
+    __tablename__ = "user_memories"
+    __table_args__ = (
+        Index("ix_user_memories_user_id", "user_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # "fact" | "preference" | "task_recipe".
+    category: Mapped[str] = mapped_column(String(16), nullable=False, default="fact")
+    # Who created it: "agent" | "user" | "admin".
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="agent")
+    # Conversation thread the memory originated from (traceability); nullable for manual adds.
+    source_thread_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Unused in v1 (see class docstring). text-embedding-3-small dimension.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

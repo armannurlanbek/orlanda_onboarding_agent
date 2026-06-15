@@ -50,6 +50,7 @@ export function AppShell({ onOpenKnowledge, onOpenSettings, children, lockLayout
                   <>
                     <DropdownMenuItem onClick={() => nav("/admin/logs")}><ShieldCheck className="h-4 w-4" /> Журнал диалогов</DropdownMenuItem>
                     <DropdownMenuItem onClick={() => nav("/admin/documents")}><ShieldCheck className="h-4 w-4" /> Метаданные документов</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => nav("/admin/memory")}><ShieldCheck className="h-4 w-4" /> Память пользователей</DropdownMenuItem>
                   </>
                 )}
                 <DropdownMenuSeparator />

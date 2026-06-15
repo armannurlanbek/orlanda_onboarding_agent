@@ -2,12 +2,14 @@ import type {
   AdminLog,
   Conversation,
   DocMeta,
+  MemorySettings,
   Message,
   MondayStatus,
   PdfFile,
   TextBlock,
   ToolEvent,
   User,
+  UserMemory,
 } from "@/lib/types";
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "";
@@ -127,6 +129,18 @@ function toDateInput(value: unknown): string {
   const d = new Date(raw);
   if (Number.isNaN(d.getTime())) return "";
   return d.toISOString().slice(0, 10);
+}
+
+function mapMemory(m: any): UserMemory {
+  const category = String(m?.category || "fact");
+  return {
+    id: String(m?.id || ""),
+    content: String(m?.content || ""),
+    category: (["fact", "preference", "task_recipe"].includes(category) ? category : "fact") as UserMemory["category"],
+    source: String(m?.source || "agent"),
+    createdAt: toIso(m?.created_at),
+    updatedAt: toIso(m?.updated_at),
+  };
 }
 
 export const api = {
@@ -572,6 +586,79 @@ export const api = {
         });
         return Boolean(data.disconnected);
       },
+    },
+  },
+
+  memory: {
+    async list(token: string): Promise<UserMemory[]> {
+      const data = await request<{ memories: any[] }>("/memories", { token });
+      return (data.memories || []).map(mapMemory);
+    },
+    async add(token: string, content: string, category: string): Promise<UserMemory> {
+      const data = await request<{ memory: any }>("/memories", {
+        method: "POST",
+        token,
+        body: { content, category },
+      });
+      return mapMemory(data.memory);
+    },
+    async update(token: string, id: string, content: string): Promise<UserMemory> {
+      const data = await request<{ memory: any }>(`/memories/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        token,
+        body: { content },
+      });
+      return mapMemory(data.memory);
+    },
+    async remove(token: string, id: string): Promise<void> {
+      await request(`/memories/${encodeURIComponent(id)}`, { method: "DELETE", token });
+    },
+    async clearAll(token: string): Promise<number> {
+      const data = await request<{ deleted: number }>("/memories", { method: "DELETE", token });
+      return Number(data.deleted || 0);
+    },
+    async getSettings(token: string): Promise<MemorySettings> {
+      const data = await request<{ enabled: boolean; globally_enabled: boolean }>("/me/memory-settings", { token });
+      return { enabled: Boolean(data.enabled), globallyEnabled: Boolean(data.globally_enabled) };
+    },
+    async setSettings(token: string, enabled: boolean): Promise<MemorySettings> {
+      const data = await request<{ enabled: boolean; globally_enabled: boolean }>("/me/memory-settings", {
+        method: "PUT",
+        token,
+        body: { enabled },
+      });
+      return { enabled: Boolean(data.enabled), globallyEnabled: Boolean(data.globally_enabled) };
+    },
+  },
+
+  adminMemory: {
+    async list(token: string, username: string): Promise<{ enabled: boolean; memories: UserMemory[] }> {
+      const data = await request<{ enabled: boolean; memories: any[] }>(
+        `/admin/users/${encodeURIComponent(username)}/memories`,
+        { token },
+      );
+      return { enabled: Boolean(data.enabled), memories: (data.memories || []).map(mapMemory) };
+    },
+    async add(token: string, username: string, content: string, category: string): Promise<UserMemory> {
+      const data = await request<{ memory: any }>(`/admin/users/${encodeURIComponent(username)}/memories`, {
+        method: "POST",
+        token,
+        body: { content, category },
+      });
+      return mapMemory(data.memory);
+    },
+    async update(token: string, username: string, id: string, content: string): Promise<UserMemory> {
+      const data = await request<{ memory: any }>(
+        `/admin/users/${encodeURIComponent(username)}/memories/${encodeURIComponent(id)}`,
+        { method: "PATCH", token, body: { content } },
+      );
+      return mapMemory(data.memory);
+    },
+    async remove(token: string, username: string, id: string): Promise<void> {
+      await request(
+        `/admin/users/${encodeURIComponent(username)}/memories/${encodeURIComponent(id)}`,
+        { method: "DELETE", token },
+      );
     },
   },
 };

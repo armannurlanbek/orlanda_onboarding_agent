@@ -81,3 +81,23 @@ export type MondayStatus = {
   mondayUserName?: string | null;
   connectedAt?: string | null;
 };
+
+export type MemoryCategory = "fact" | "preference" | "task_recipe";
+
+export type UserMemory = {
+  // Short stable handle used to reference the memory in API calls.
+  id: string;
+  content: string;
+  category: MemoryCategory;
+  // Who created it: agent | user | admin.
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MemorySettings = {
+  // Per-user toggle.
+  enabled: boolean;
+  // false when the feature is disabled platform-wide (global kill-switch).
+  globallyEnabled: boolean;
+};

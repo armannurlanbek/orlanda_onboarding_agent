@@ -350,6 +350,12 @@ class ResponseFormat:
     response_content: str
 
 
+def compose_system_prompt_suffix(*blocks: str | None) -> str | None:
+    """Join non-empty system-prompt suffix blocks (e.g. memory + monday) with blank lines."""
+    parts = [b.strip() for b in blocks if b and b.strip()]
+    return "\n\n".join(parts) if parts else None
+
+
 def build_agent(
     extra_tools: list | None = None,
     model_name: str | None = None,

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { MemorySettingsCard } from "@/components/MemorySettingsCard";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/apiClient";
 import type { MondayStatus } from "@/lib/types";
@@ -171,6 +172,8 @@ export default function SettingsPage() {
               )}
             </CardContent>
           </Card>
+
+          <MemorySettingsCard />
         </div>
       </main>
     </div>

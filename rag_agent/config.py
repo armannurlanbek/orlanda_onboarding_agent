@@ -133,6 +133,22 @@ RAG_RATE_LIMIT_CHAT = os.environ.get("RAG_RATE_LIMIT_CHAT", "60/minute").strip()
 # Logging format: "json" (default, structured) or "text" (human-readable dev output).
 RAG_LOG_FORMAT = os.environ.get("RAG_LOG_FORMAT", "json").strip().lower()
 
+# ── Long-term user memory (cross-conversation) ───────────────────────────────
+# Per-user memories the agent writes via tools (save/update/delete_memory) and that are
+# injected into the system prompt on every turn, so knowledge persists across separate
+# conversations. Gated by a global kill-switch here AND a per-user toggle
+# (users.memory_enabled). See rag_agent.user_memory / rag_agent.memory_tools.
+RAG_MEMORY_ENABLED = os.environ.get("RAG_MEMORY_ENABLED", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+# Hard cap on stored memories per user; save_memory refuses to add beyond this.
+RAG_MAX_USER_MEMORIES = max(1, int(os.environ.get("RAG_MAX_USER_MEMORIES", "100")))
+# Token budget for the injected memory block (most-recently-updated win when exceeded).
+# Approximated as ~4 chars/token at render time (no tokenizer dependency).
+RAG_MEMORY_INJECT_TOKEN_BUDGET = max(
+    200, int(os.environ.get("RAG_MEMORY_INJECT_TOKEN_BUDGET", "1500"))
+)
+
 # ── monday.com integration (per-user OAuth + remote MCP) ─────────────────────
 # Optional feature: enabled only when both client id and secret are set (see
 # monday_enabled()). Each user connects their OWN monday account; the agent calls
@@ -176,6 +192,11 @@ RAG_MONDAY_AGENT_RECURSION_LIMIT = max(
     RAG_MAX_AGENT_RECURSION_LIMIT,
     int(os.environ.get("RAG_MONDAY_AGENT_RECURSION_LIMIT", "40")),
 )
+
+
+def memory_enabled() -> bool:
+    """True when long-term user memory is globally enabled (kill-switch)."""
+    return RAG_MEMORY_ENABLED
 
 
 def monday_enabled() -> bool:
