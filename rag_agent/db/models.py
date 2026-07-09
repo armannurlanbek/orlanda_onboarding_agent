@@ -247,6 +247,38 @@ class UserMondayToken(Base):
     )
 
 
+class ClientInvite(Base):
+    """One invite link for external-client registration (client portal).
+
+    The invite bakes in the OrlandaBot project ids the client will get access
+    to; registration via the link creates a ``users`` row with role="client"
+    and provisions the access in orlanda-api. ``project_names`` is a display
+    cache for the admin UI so listing invites needs no orlanda-api round-trip.
+    """
+
+    __tablename__ = "client_invites"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # OrlandaBot project ids (int) baked into the link.
+    project_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    project_names: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    max_uses: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    used_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class UserMemory(Base):
     """One long-term memory about a user, persisted across all their conversations.
 

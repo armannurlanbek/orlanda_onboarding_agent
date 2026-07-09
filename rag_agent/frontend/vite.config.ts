@@ -43,6 +43,12 @@ export default defineConfig(({ mode }) => ({
       "/admin/documents/metadata": { target: apiTarget, changeOrigin: true },
       "/admin/users": { target: apiTarget, changeOrigin: true },
       "/admin/model": { target: apiTarget, changeOrigin: true },
+      // Client portal: /client/portal/* are API calls; /client/tasks etc. are SPA
+      // routes (HTML navigations bypass to index.html like /chat above).
+      "/client": { target: apiTarget, changeOrigin: true, bypass: bypassSpaNavigation },
+      "/invites": { target: apiTarget, changeOrigin: true },
+      "/admin/invites": { target: apiTarget, changeOrigin: true, bypass: bypassSpaNavigation },
+      "/admin/orlanda": { target: apiTarget, changeOrigin: true },
     },
     hmr: {
       overlay: false,

@@ -1,10 +1,15 @@
 import type {
   AdminLog,
+  ClientChatReply,
+  ClientInvite,
+  ClientProgressProject,
+  ClientTasksTable,
   Conversation,
   DocMeta,
   MemorySettings,
   Message,
   MondayStatus,
+  OrlandaProject,
   PdfFile,
   TextBlock,
   ToolEvent,
@@ -165,7 +170,7 @@ export const api = {
       await request<{ ok: boolean }>("/auth/logout", { method: "POST", token: token ?? null });
     },
     async me(token?: string | null): Promise<User> {
-      const data = await request<{ username: string; role: "user" | "admin"; must_change_password?: boolean }>("/auth/me", { token: token ?? null });
+      const data = await request<{ username: string; role: "user" | "admin" | "client"; must_change_password?: boolean }>("/auth/me", { token: token ?? null });
       return {
         username: data.username,
         role: data.role,
@@ -177,7 +182,7 @@ export const api = {
       token: string,
       payload: { currentPassword?: string; newPassword: string; repeatPassword: string },
     ): Promise<{ token: string; user: User }> {
-      const data = await request<{ token: string; username: string; role: "user" | "admin"; must_change_password?: boolean }>(
+      const data = await request<{ token: string; username: string; role: "user" | "admin" | "client"; must_change_password?: boolean }>(
         "/auth/password/change",
         {
           method: "POST",
@@ -198,6 +203,56 @@ export const api = {
           mustChangePassword: Boolean(data.must_change_password),
         },
       };
+    },
+  },
+
+  clientPortal: {
+    async invitePreview(token: string): Promise<{ valid: boolean; error?: string; company_name?: string; project_names?: string[] }> {
+      return request(`/invites/${encodeURIComponent(token)}`);
+    },
+    async registerClient(inviteToken: string, email: string, password: string): Promise<{ token: string; user: User }> {
+      const data = await request<{ token: string; username: string; role: string }>("/auth/register-client", {
+        method: "POST",
+        body: { invite_token: inviteToken, email, password },
+      });
+      return {
+        token: data.token,
+        user: { username: data.username, role: "client", displayName: data.username, mustChangePassword: false },
+      };
+    },
+    async tasksTable(token: string): Promise<ClientTasksTable> {
+      return request("/client/portal/tasks-table", { token });
+    },
+    async chat(token: string, message: string): Promise<ClientChatReply> {
+      return request("/client/portal/chat", { method: "POST", token, body: { message } });
+    },
+    async chatReset(token: string): Promise<void> {
+      await request("/client/portal/chat/reset", { method: "POST", token });
+    },
+    async progress(token: string): Promise<ClientProgressProject[]> {
+      const data = await request<{ projects: ClientProgressProject[] }>("/client/portal/progress", { token });
+      return data.projects || [];
+    },
+  },
+
+  adminInvites: {
+    async orlandaProjects(token: string): Promise<OrlandaProject[]> {
+      const data = await request<{ projects: OrlandaProject[] }>("/admin/orlanda/projects", { token });
+      return data.projects || [];
+    },
+    async list(token: string): Promise<ClientInvite[]> {
+      const data = await request<{ invites: ClientInvite[] }>("/admin/invites", { token });
+      return data.invites || [];
+    },
+    async create(
+      token: string,
+      payload: { project_ids: number[]; project_names: string[]; company_name?: string; max_uses?: number; expires_days?: number },
+    ): Promise<ClientInvite> {
+      const data = await request<{ invite: ClientInvite }>("/admin/invites", { method: "POST", token, body: payload });
+      return data.invite;
+    },
+    async remove(token: string, inviteToken: string): Promise<void> {
+      await request(`/admin/invites/${encodeURIComponent(inviteToken)}`, { method: "DELETE", token });
     },
   },
 

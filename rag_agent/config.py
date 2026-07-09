@@ -194,6 +194,27 @@ RAG_MONDAY_AGENT_RECURSION_LIMIT = max(
 )
 
 
+# ── Client portal (external clients) ─────────────────────────────────────────
+# External clients register via invite links (role="client") and use a separate
+# cabinet whose chat/tasks data comes from orlanda-api (the OrlandaBot brain).
+# The feature is effectively disabled until ORLANDA_API_KEY is set.
+ORLANDA_API_BASE_URL = os.environ.get("ORLANDA_API_BASE_URL", "http://127.0.0.1:8003").strip().rstrip("/")
+# Internal service-to-service key; must equal CLIENT_PORTAL_API_KEY in orlanda-api's .env.
+ORLANDA_API_KEY = os.environ.get("ORLANDA_API_KEY", "").strip() or None
+# Public base URL of the progress-tracking app (Progress tab iframes /p/{token} pages).
+PROGRESS_BASE_URL = os.environ.get("PROGRESS_BASE_URL", "").strip().rstrip("/")
+# Shared secret for progress-tracking's project-token lookup endpoint.
+PROGRESS_API_SECRET = os.environ.get("PROGRESS_API_SECRET", "").strip() or None
+# Invite links: default validity (days); admins can override per invite.
+CLIENT_INVITE_EXPIRY_DAYS = max(1, min(365, int(os.environ.get("CLIENT_INVITE_EXPIRY_DAYS", "14"))))
+RAG_RATE_LIMIT_CLIENT_REGISTER = os.environ.get("RAG_RATE_LIMIT_CLIENT_REGISTER", "5/minute").strip()
+
+
+def client_portal_enabled() -> bool:
+    """True when the orlanda-api internal key is configured."""
+    return bool(ORLANDA_API_KEY)
+
+
 def memory_enabled() -> bool:
     """True when long-term user memory is globally enabled (kill-switch)."""
     return RAG_MEMORY_ENABLED

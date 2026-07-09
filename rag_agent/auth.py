@@ -93,7 +93,11 @@ def _random_temp_password(length: int = 16) -> str:
 
 
 def get_user_role(username: str) -> str:
-    """Return 'admin' or 'user'. Admin if in ADMIN_USERNAMES env or stored role is admin."""
+    """Return 'admin', 'client' or 'user'.
+
+    Admin if in ADMIN_USERNAMES env or stored role is admin; 'client' comes
+    only from the stored role (external clients registered via invite links).
+    """
     if not username:
         return "user"
     canonical = _canonical_username(username)
@@ -107,8 +111,8 @@ def get_user_role(username: str) -> str:
     session = get_session_factory()()
     try:
         row = session.scalar(select(User).where(func.lower(User.username).in_(_identity_candidates(username))))
-        if row and row.role == "admin":
-            return "admin"
+        if row and row.role in ("admin", "client"):
+            return row.role
     finally:
         session.close()
     return "user"
@@ -176,9 +180,30 @@ def _valid_company_email_username(username: str) -> bool:
     return True
 
 
+def _valid_any_email_username(username: str) -> bool:
+    """Exactly one '@', any domain with a dot, common email chars (client accounts)."""
+    if username.count("@") != 1 or len(username) > RAG_USERNAME_MAX_LEN:
+        return False
+    local, _, domain = username.partition("@")
+    if not local or "." not in domain or domain.startswith(".") or domain.endswith("."):
+        return False
+    for ch in local:
+        if ch in "._%+-" or ch.isalnum():
+            continue
+        return False
+    for ch in domain:
+        if ch in ".-" or ch.isalnum():
+            continue
+        return False
+    return True
+
+
 def _username_valid(username: str) -> bool:
+    # Login accepts any syntactically valid e-mail: external clients (invite
+    # registration) have arbitrary domains. Employee self-registration is still
+    # restricted to the company domain in register().
     if "@" in username:
-        return _valid_company_email_username(username)
+        return _valid_company_email_username(username) or _valid_any_email_username(username)
     return _valid_short_username(username)
 
 
@@ -239,11 +264,53 @@ def register(username: str, password: str) -> tuple[bool, str]:
     return _register_db(_canonical_username(username), password)
 
 
-def _register_db(username: str, password: str) -> tuple[bool, str]:
+def register_client(username: str, password: str) -> tuple[bool, str]:
+    """Register an external client account (role='client', any e-mail domain).
+
+    Only called from the invite-registration flow — the invite itself is
+    validated by the caller (rag_agent.client_portal). Returns (ok, token_or_error).
+    """
+    if not DATABASE_URL:
+        return False, "Сервер не настроен: задайте DATABASE_URL (PostgreSQL)."
+    username = (username or "").strip().lower()
+    password = (password or "").strip()
+    if not _valid_any_email_username(username):
+        return False, "Укажите действующий адрес электронной почты"
+    policy_err = _password_policy_error(password)
+    if policy_err:
+        return False, policy_err
+    return _register_db(username, password, role="client")
+
+
+def delete_user_account(username: str) -> bool:
+    """Hard-delete a user row (sessions cascade). Used to roll back a client
+    registration whose access provisioning in orlanda-api failed."""
+    if not DATABASE_URL or not username:
+        return False
     from rag_agent.db.models import User
     from rag_agent.db.session import get_session_factory
 
-    role = "admin" if username.lower() in ADMIN_USERNAMES else "user"
+    db = get_session_factory()()
+    try:
+        user = db.scalar(select(User).where(func.lower(User.username) == username.lower()))
+        if not user:
+            return False
+        db.delete(user)
+        db.commit()
+        return True
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _register_db(username: str, password: str, role: str | None = None) -> tuple[bool, str]:
+    from rag_agent.db.models import User
+    from rag_agent.db.session import get_session_factory
+
+    if role is None:
+        role = "admin" if username.lower() in ADMIN_USERNAMES else "user"
     ph = _hash_argon2(password)
     now = datetime.now(timezone.utc)
     session = get_session_factory()()

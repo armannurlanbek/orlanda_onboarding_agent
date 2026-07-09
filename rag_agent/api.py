@@ -66,15 +66,18 @@ from rag_agent.config import (
     RAG_MAX_USER_MESSAGE_CHARS,
     RAG_MIN_PASSWORD_LENGTH,
     RAG_RATE_LIMIT_CHAT,
+    RAG_RATE_LIMIT_CLIENT_REGISTER,
     RAG_RATE_LIMIT_LOGIN,
     RAG_RATE_LIMIT_REGISTER,
     RAG_USERNAME_MAX_LEN,
+    client_portal_enabled,
     memory_enabled,
     monday_enabled,
     require_runtime_keys,
     warn_oauth_redirect_misconfig,
 )
 from rag_agent.audit_log import count_audit, list_audit, write_audit
+from rag_agent import client_portal
 from rag_agent.monday_oauth import (
     build_authorize_url as monday_build_authorize_url,
     delete_token as monday_delete_token,
@@ -1446,6 +1449,172 @@ def admin_user_provision(
         ip_address=request.client.host if request.client else "",
     )
     return {"ok": True, "user": result}
+
+
+# ── Client portal (external clients: invites, cabinet data) ──────────────────
+
+class InviteCreateRequest(BaseModel):
+    project_ids: list[int] = Field(..., min_length=1)
+    project_names: list[str] = Field(default_factory=list)
+    company_name: str = Field(default="", max_length=255)
+    max_uses: int = Field(default=1, ge=1, le=100)
+    expires_days: int | None = Field(default=None, ge=1, le=365)
+
+
+class ClientRegisterRequest(BaseModel):
+    invite_token: str = Field(..., min_length=8, max_length=64)
+    email: str = Field(..., min_length=5, max_length=RAG_USERNAME_MAX_LEN)
+    password: str = Field(..., min_length=RAG_MIN_PASSWORD_LENGTH, max_length=RAG_MAX_PASSWORD_LENGTH)
+
+
+class ClientChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=10000)
+
+
+def _require_client(authorization: str | None = Header(default=None)) -> str:
+    """Require a logged-in client (admins allowed too, for testing the cabinet)."""
+    username = _get_username(authorization)
+    if get_user_role(username) not in ("client", "admin"):
+        raise HTTPException(status_code=403, detail="Доступ только для клиентов")
+    return username
+
+
+def _client_portal_or_503() -> None:
+    if not client_portal_enabled():
+        raise HTTPException(status_code=503, detail="Клиентский портал не настроен")
+
+
+@app.get("/admin/orlanda/projects")
+async def admin_orlanda_projects(authorization: str | None = Header(default=None)):
+    """OrlandaBot project list for the invite-creation picker."""
+    _require_admin(authorization)
+    _client_portal_or_503()
+    try:
+        return {"projects": await client_portal.orlanda_all_projects()}
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/admin/invites")
+def admin_invite_create(
+    request: Request,
+    body: InviteCreateRequest,
+    authorization: str | None = Header(default=None),
+):
+    admin_username = _require_admin(authorization)
+    _client_portal_or_503()
+    invite = client_portal.create_invite(
+        created_by=admin_username,
+        project_ids=body.project_ids,
+        project_names=body.project_names,
+        company_name=body.company_name,
+        max_uses=body.max_uses,
+        expires_days=body.expires_days,
+    )
+    base = RAG_FRONTEND_BASE_URL or ""
+    invite["url"] = f"{base}/register?invite={invite['token']}"
+    write_audit(
+        "client_invite_create",
+        admin_username,
+        target=invite["token"],
+        details={"project_ids": body.project_ids, "company": body.company_name},
+        ip_address=request.client.host if request.client else "",
+    )
+    return {"invite": invite}
+
+
+@app.get("/admin/invites")
+def admin_invite_list(authorization: str | None = Header(default=None)):
+    _require_admin(authorization)
+    base = RAG_FRONTEND_BASE_URL or ""
+    invites = client_portal.list_invites()
+    for inv in invites:
+        inv["url"] = f"{base}/register?invite={inv['token']}"
+    return {"invites": invites}
+
+
+@app.delete("/admin/invites/{token}")
+def admin_invite_delete(
+    request: Request,
+    token: str,
+    authorization: str | None = Header(default=None),
+):
+    admin_username = _require_admin(authorization)
+    if not client_portal.delete_invite(token):
+        raise HTTPException(status_code=404, detail="Приглашение не найдено")
+    write_audit(
+        "client_invite_delete",
+        admin_username,
+        target=token,
+        ip_address=request.client.host if request.client else "",
+    )
+    return {"ok": True}
+
+
+@app.get("/invites/{token}")
+def invite_preview(token: str):
+    """Public invite preview for the registration page (no auth)."""
+    return client_portal.check_invite(token)
+
+
+@app.post("/auth/register-client", response_model=AuthResponse)
+@limiter.limit(RAG_RATE_LIMIT_CLIENT_REGISTER)
+async def register_client_account(request: Request, body: ClientRegisterRequest):
+    """Register an external client through an invite link."""
+    _client_portal_or_503()
+    ok, result = await client_portal.register_client_via_invite(
+        body.invite_token, body.email, body.password
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=result)
+    username = resolve_token(result) or body.email.strip().lower()
+    return AuthResponse(token=result, username=username, role="client")
+
+
+@app.get("/client/portal/tasks-table")
+async def client_portal_tasks_table(authorization: str | None = Header(default=None)):
+    username = _require_client(authorization)
+    _client_portal_or_503()
+    try:
+        return await client_portal.orlanda_tasks_table(username)
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/client/portal/chat")
+@limiter.limit(RAG_RATE_LIMIT_CHAT)
+async def client_portal_chat(
+    request: Request,
+    body: ClientChatRequest,
+    authorization: str | None = Header(default=None),
+):
+    username = _require_client(authorization)
+    _client_portal_or_503()
+    try:
+        return await client_portal.orlanda_chat(username, body.message)
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/client/portal/chat/reset")
+async def client_portal_chat_reset(authorization: str | None = Header(default=None)):
+    username = _require_client(authorization)
+    _client_portal_or_503()
+    try:
+        await client_portal.orlanda_chat_reset(username)
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"ok": True}
+
+
+@app.get("/client/portal/progress")
+async def client_portal_progress(authorization: str | None = Header(default=None)):
+    username = _require_client(authorization)
+    _client_portal_or_503()
+    try:
+        return {"projects": await client_portal.progress_links(username)}
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 # ── monday.com integration (per-user OAuth + remote MCP) ─────────────────────

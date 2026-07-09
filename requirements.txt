@@ -28,6 +28,7 @@ duckduckgo-search
 pypdf
 fastapi
 uvicorn
+httpx
 pyyaml
 cryptography
 sqlalchemy>=2.0

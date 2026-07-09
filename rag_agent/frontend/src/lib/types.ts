@@ -1,4 +1,4 @@
-export type UserRole = "user" | "admin";
+export type UserRole = "user" | "admin" | "client";
 
 export type User = {
   username: string;
@@ -93,6 +93,52 @@ export type UserMemory = {
   source: string;
   createdAt: string;
   updatedAt: string;
+};
+
+// ── Client portal ────────────────────────────────────────────────────────────
+
+export type ClientTaskBlock = {
+  project_id: number;
+  project_name: string;
+  rows: Record<string, string>[];
+  fetched_at: string;
+  error?: boolean;
+};
+
+export type ClientTasksTable = {
+  headers: string[];
+  status_colors: Record<string, string>;
+  projects: ClientTaskBlock[];
+};
+
+export type ClientChatReply = {
+  answer: string;
+  table: { title?: string; columns: string[]; rows: string[][] } | null;
+};
+
+export type ClientProgressProject = {
+  id: number;
+  name: string;
+  url: string | null;
+};
+
+export type ClientInvite = {
+  token: string;
+  url?: string;
+  company_name: string;
+  project_ids: number[];
+  project_names: string[];
+  max_uses: number;
+  used_count: number;
+  expires_at: string | null;
+  created_by: string;
+  created_at: string | null;
+};
+
+export type OrlandaProject = {
+  id: number;
+  name: string;
+  monday_item_id: string;
 };
 
 export type MemorySettings = {
