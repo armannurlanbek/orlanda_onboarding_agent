@@ -45,6 +45,7 @@ const dict: Record<string, { en: string; he: string }> = {
     he: "נשמח לשמוע מכם — שאלות, רעיונות או הערות על הפרויקט שלכם.",
   },
   "feedback.emailUs": { en: "Email us", he: "כתבו לנו" },
+  "feedback.openForm": { en: "Open feedback form", he: "פתיחת טופס משוב" },
 
   "register.title": { en: "Create your account", he: "יצירת חשבון" },
   "register.subtitle": { en: "You were invited to the Orlanda client portal", he: "הוזמנתם לפורטל הלקוחות של Orlanda" },

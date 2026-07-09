@@ -1,11 +1,13 @@
 import type {
   AdminLog,
+  ClientAccount,
   ClientChatReply,
   ClientInvite,
   ClientProgressProject,
   ClientTasksTable,
   Conversation,
   DocMeta,
+  FeedbackLink,
   MemorySettings,
   Message,
   MondayStatus,
@@ -233,6 +235,10 @@ export const api = {
       const data = await request<{ projects: ClientProgressProject[] }>("/client/portal/progress", { token });
       return data.projects || [];
     },
+    async feedback(token: string): Promise<FeedbackLink[]> {
+      const data = await request<{ links: FeedbackLink[] }>("/client/portal/feedback", { token });
+      return data.links || [];
+    },
   },
 
   adminInvites: {
@@ -253,6 +259,24 @@ export const api = {
     },
     async remove(token: string, inviteToken: string): Promise<void> {
       await request(`/admin/invites/${encodeURIComponent(inviteToken)}`, { method: "DELETE", token });
+    },
+    async listClients(token: string): Promise<ClientAccount[]> {
+      const data = await request<{ clients: ClientAccount[] }>("/admin/clients", { token });
+      return data.clients || [];
+    },
+    async clientAccess(token: string, username: string): Promise<{ id: number; name: string }[]> {
+      const data = await request<{ projects: { id: number; name: string }[] }>(
+        `/admin/clients/${encodeURIComponent(username)}/access`,
+        { token },
+      );
+      return data.projects || [];
+    },
+    async setClientAccess(token: string, username: string, projectIds: number[]): Promise<number[]> {
+      const data = await request<{ project_ids: number[] }>(
+        `/admin/clients/${encodeURIComponent(username)}/access`,
+        { method: "PUT", token, body: { project_ids: projectIds } },
+      );
+      return data.project_ids || [];
     },
   },
 

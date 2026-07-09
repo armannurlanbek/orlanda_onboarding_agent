@@ -92,27 +92,48 @@ async def orlanda_chat_reset(user: str) -> None:
 
 # ── Progress-tracking links ──────────────────────────────────────────────────
 
+async def _progress_token_map(client: httpx.AsyncClient) -> dict[str, str]:
+    try:
+        resp = await client.get(
+            f"{PROGRESS_BASE_URL}/api/project-tokens",
+            params={"secret": PROGRESS_API_SECRET},
+        )
+        if resp.status_code == 200:
+            return resp.json().get("tokens", {})
+        logger.warning("progress-tracking token lookup -> %s", resp.status_code)
+    except httpx.HTTPError as exc:
+        logger.warning("progress-tracking token lookup failed: %s", exc)
+    return {}
+
+
 async def progress_links(user: str) -> list[dict]:
     """Progress-page URLs for the client's projects.
 
     Combines orlanda-api access (project -> monday_item_id) with the
-    progress-tracking token map. Projects without a token get url=None.
+    progress-tracking token map. Old projects may predate the auto-token
+    webhook, so missing tokens are created on the fly via progress-tracking's
+    /webhook/refresh (idempotent: it creates the token only when absent).
     """
     projects = await orlanda_get_access(user)
     token_map: dict[str, str] = {}
-    if PROGRESS_BASE_URL and PROGRESS_API_SECRET:
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
-                resp = await client.get(
-                    f"{PROGRESS_BASE_URL}/api/project-tokens",
-                    params={"secret": PROGRESS_API_SECRET},
-                )
-            if resp.status_code == 200:
-                token_map = resp.json().get("tokens", {})
-            else:
-                logger.warning("progress-tracking token lookup -> %s", resp.status_code)
-        except httpx.HTTPError as exc:
-            logger.warning("progress-tracking token lookup failed: %s", exc)
+    if PROGRESS_BASE_URL and PROGRESS_API_SECRET and projects:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
+            token_map = await _progress_token_map(client)
+            missing = [
+                str(p["monday_item_id"])
+                for p in projects
+                if p.get("monday_item_id") and str(p["monday_item_id"]) not in token_map
+            ]
+            for monday_id in missing:
+                try:
+                    await client.post(
+                        f"{PROGRESS_BASE_URL}/webhook/refresh",
+                        json={"project_id": monday_id, "secret": PROGRESS_API_SECRET},
+                    )
+                except httpx.HTTPError as exc:
+                    logger.warning("progress token create failed for %s: %s", monday_id, exc)
+            if missing:
+                token_map = await _progress_token_map(client)
 
     result = []
     for p in projects:
@@ -125,6 +146,34 @@ async def progress_links(user: str) -> list[dict]:
             }
         )
     return result
+
+
+async def orlanda_feedback_links(user: str) -> list[dict]:
+    """Per-client feedback-form links (EN/HE) from the Monday clients board."""
+    data = await _orlanda_request("GET", "/client/feedback-links", params={"user": user})
+    return data.get("links", [])
+
+
+def list_client_accounts() -> list[dict]:
+    """All portal client accounts (role='client') for the admin access editor."""
+    from rag_agent.db.models import User
+    from rag_agent.db.session import get_session_factory
+
+    db = get_session_factory()()
+    try:
+        rows = db.execute(
+            select(User).where(User.role == "client").order_by(User.created_at.desc())
+        ).scalars().all()
+        return [
+            {
+                "username": u.username,
+                "is_active": u.is_active,
+                "created_at": u.created_at.isoformat() if u.created_at else None,
+            }
+            for u in rows
+        ]
+    finally:
+        db.close()
 
 
 # ── Invites ──────────────────────────────────────────────────────────────────

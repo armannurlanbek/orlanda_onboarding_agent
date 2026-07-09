@@ -1617,6 +1617,65 @@ async def client_portal_progress(authorization: str | None = Header(default=None
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+@app.get("/client/portal/feedback")
+async def client_portal_feedback(authorization: str | None = Header(default=None)):
+    username = _require_client(authorization)
+    _client_portal_or_503()
+    try:
+        return {"links": await client_portal.orlanda_feedback_links(username)}
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+# ── Admin: client accounts & their project access ────────────────────────────
+
+class ClientAccessUpdateRequest(BaseModel):
+    project_ids: list[int] = Field(default_factory=list)
+
+
+@app.get("/admin/clients")
+def admin_clients_list(authorization: str | None = Header(default=None)):
+    _require_admin(authorization)
+    return {"clients": client_portal.list_client_accounts()}
+
+
+@app.get("/admin/clients/{client_username}/access")
+async def admin_client_access_get(
+    client_username: str,
+    authorization: str | None = Header(default=None),
+):
+    _require_admin(authorization)
+    _client_portal_or_503()
+    try:
+        projects = await client_portal.orlanda_get_access(client_username)
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"username": client_username, "projects": projects}
+
+
+@app.put("/admin/clients/{client_username}/access")
+async def admin_client_access_put(
+    request: Request,
+    client_username: str,
+    body: ClientAccessUpdateRequest,
+    authorization: str | None = Header(default=None),
+):
+    admin_username = _require_admin(authorization)
+    _client_portal_or_503()
+    try:
+        project_ids = await client_portal.orlanda_sync_access(client_username, body.project_ids)
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    write_audit(
+        "client_access_update",
+        admin_username,
+        target=client_username,
+        details={"project_ids": project_ids},
+        ip_address=request.client.host if request.client else "",
+    )
+    return {"username": client_username, "project_ids": project_ids}
+
+
 # ── monday.com integration (per-user OAuth + remote MCP) ─────────────────────
 def _monday_settings_redirect(status: str, reason: str | None = None) -> RedirectResponse:
     """302 back to the frontend settings page carrying a monday status flag.

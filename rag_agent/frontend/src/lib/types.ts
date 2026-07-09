@@ -141,6 +141,18 @@ export type OrlandaProject = {
   monday_item_id: string;
 };
 
+export type FeedbackLink = {
+  client: string;
+  url_en: string | null;
+  url_he: string | null;
+};
+
+export type ClientAccount = {
+  username: string;
+  is_active: boolean;
+  created_at: string | null;
+};
+
 export type MemorySettings = {
   // Per-user toggle.
   enabled: boolean;

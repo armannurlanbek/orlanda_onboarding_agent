@@ -1,9 +1,9 @@
 /**
- * Admin page: client invite links. Pick OrlandaBot projects, generate a link
- * with the access baked in, copy it and send to the client. Admin UI stays
- * Russian like the rest of the admin pages.
+ * Admin page: client invite links + access management for existing client
+ * accounts. Project pickers filter as you type (the catalog is 300+ projects,
+ * live-synced from Monday by orlanda-api). Admin UI stays Russian.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppShell } from "@/components/AppShell";
 import { api } from "@/lib/apiClient";
@@ -15,7 +15,109 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Copy, Trash2 } from "lucide-react";
+import type { OrlandaProject } from "@/lib/types";
+import { Copy, Pencil, Trash2, X } from "lucide-react";
+
+function ProjectPicker({
+  projects,
+  selected,
+  onToggle,
+}: {
+  projects: OrlandaProject[];
+  selected: Set<number>;
+  onToggle: (id: number) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return projects;
+    return projects.filter((p) => p.name.toLowerCase().includes(q));
+  }, [projects, search]);
+
+  return (
+    <div className="space-y-2">
+      <Input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Поиск проекта по названию…"
+      />
+      {selected.size > 0 && (
+        <div className="text-xs text-muted-foreground">
+          Выбрано: {selected.size}{" "}
+          <button className="text-primary hover:underline" onClick={() => [...selected].forEach(onToggle)}>
+            сбросить
+          </button>
+        </div>
+      )}
+      <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3 max-h-64 overflow-y-auto rounded-md border border-border p-3">
+        {visible.map((p) => (
+          <label key={p.id} className="flex items-center gap-2 text-sm cursor-pointer">
+            <Checkbox checked={selected.has(p.id)} onCheckedChange={() => onToggle(p.id)} />
+            <span className="truncate" title={p.name}>{p.name}</span>
+          </label>
+        ))}
+        {!visible.length && <p className="text-sm text-muted-foreground col-span-full">Ничего не найдено</p>}
+      </div>
+    </div>
+  );
+}
+
+function ClientAccessEditor({
+  username,
+  projects,
+  onClose,
+}: {
+  username: string;
+  projects: OrlandaProject[];
+  onClose: () => void;
+}) {
+  const { token } = useAuth();
+  const { toast } = useToast();
+  const [selected, setSelected] = useState<Set<number> | null>(null);
+
+  const accessQ = useQuery({
+    queryKey: ["client-access", username],
+    queryFn: () => api.adminInvites.clientAccess(token!, username),
+    enabled: Boolean(token),
+  });
+
+  const current = selected ?? new Set((accessQ.data ?? []).map((p) => p.id));
+
+  const toggle = (id: number) =>
+    setSelected(() => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const saveM = useMutation({
+    mutationFn: () => api.adminInvites.setClientAccess(token!, username, [...current]),
+    onSuccess: () => {
+      toast({ title: "Доступы обновлены", description: username });
+      onClose();
+    },
+    onError: (e) =>
+      toast({ title: "Ошибка", description: e instanceof Error ? e.message : "Не удалось сохранить", variant: "destructive" }),
+  });
+
+  return (
+    <div className="rounded-md border border-border p-3 mt-2 space-y-3 bg-muted/30">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium">Доступы: {username}</span>
+        <Button variant="ghost" size="sm" onClick={onClose}><X className="h-4 w-4" /></Button>
+      </div>
+      {accessQ.isLoading ? (
+        <Skeleton className="h-24 w-full" />
+      ) : (
+        <ProjectPicker projects={projects} selected={current} onToggle={toggle} />
+      )}
+      <Button size="sm" onClick={() => saveM.mutate()} disabled={saveM.isPending || accessQ.isLoading}>
+        {saveM.isPending ? "Сохранение…" : "Сохранить доступы"}
+      </Button>
+    </div>
+  );
+}
 
 export default function AdminInvitesPage() {
   const { token } = useAuth();
@@ -26,15 +128,22 @@ export default function AdminInvitesPage() {
   const [maxUses, setMaxUses] = useState(1);
   const [expiresDays, setExpiresDays] = useState(14);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [editingClient, setEditingClient] = useState<string | null>(null);
 
   const projectsQ = useQuery({
     queryKey: ["orlanda-projects"],
     queryFn: () => api.adminInvites.orlandaProjects(token!),
     enabled: Boolean(token),
+    staleTime: 60_000,
   });
   const invitesQ = useQuery({
     queryKey: ["client-invites"],
     queryFn: () => api.adminInvites.list(token!),
+    enabled: Boolean(token),
+  });
+  const clientsQ = useQuery({
+    queryKey: ["client-accounts"],
+    queryFn: () => api.adminInvites.listClients(token!),
     enabled: Boolean(token),
   });
 
@@ -109,19 +218,54 @@ export default function AdminInvitesPage() {
               <Label>Проекты (доступ клиента)</Label>
               {projectsQ.isLoading && <Skeleton className="h-24 w-full" />}
               {projectsQ.isError && <p className="text-sm text-destructive">Не удалось загрузить проекты из OrlandaBot</p>}
-              <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3 max-h-64 overflow-y-auto rounded-md border border-border p-3">
-                {(projectsQ.data ?? []).map((p) => (
-                  <label key={p.id} className="flex items-center gap-2 text-sm cursor-pointer">
-                    <Checkbox checked={selected.has(p.id)} onCheckedChange={() => toggle(p.id)} />
-                    <span className="truncate">{p.name}</span>
-                  </label>
-                ))}
-              </div>
+              {projectsQ.data && <ProjectPicker projects={projectsQ.data} selected={selected} onToggle={toggle} />}
             </div>
 
             <Button onClick={() => createM.mutate()} disabled={!selected.size || createM.isPending}>
               {createM.isPending ? "Создание…" : "Создать ссылку-приглашение"}
             </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Клиентские аккаунты</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {clientsQ.isLoading && <Skeleton className="h-16 w-full" />}
+            {!clientsQ.isLoading && !(clientsQ.data ?? []).length && (
+              <p className="text-sm text-muted-foreground">Зарегистрированных клиентов пока нет.</p>
+            )}
+            <div className="space-y-2">
+              {(clientsQ.data ?? []).map((c) => (
+                <div key={c.username}>
+                  <div className="flex flex-wrap items-center gap-3 rounded-md border border-border p-3 text-sm">
+                    <div className="flex-1 min-w-48">
+                      <div className="font-medium">{c.username}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {c.created_at && `зарегистрирован ${new Date(c.created_at).toLocaleDateString("ru-RU")}`}
+                        {!c.is_active && " · отключён"}
+                      </div>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-1.5"
+                      onClick={() => setEditingClient(editingClient === c.username ? null : c.username)}
+                    >
+                      <Pencil className="h-3.5 w-3.5" /> Доступы
+                    </Button>
+                  </div>
+                  {editingClient === c.username && projectsQ.data && (
+                    <ClientAccessEditor
+                      username={c.username}
+                      projects={projectsQ.data}
+                      onClose={() => setEditingClient(null)}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
           </CardContent>
         </Card>
 

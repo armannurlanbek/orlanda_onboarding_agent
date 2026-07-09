@@ -49,6 +49,7 @@ export default defineConfig(({ mode }) => ({
       "/invites": { target: apiTarget, changeOrigin: true },
       "/admin/invites": { target: apiTarget, changeOrigin: true, bypass: bypassSpaNavigation },
       "/admin/orlanda": { target: apiTarget, changeOrigin: true },
+      "/admin/clients": { target: apiTarget, changeOrigin: true },
     },
     hmr: {
       overlay: false,
