@@ -109,7 +109,7 @@ function RegisterForm() {
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="password">{t("register.password")}</Label>
-                  <Input id="password" type="password" required minLength={12} value={password} onChange={(e) => setPassword(e.target.value)} dir="ltr" />
+                  <Input id="password" type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} dir="ltr" />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="repeat">{t("register.repeat")}</Label>

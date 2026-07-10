@@ -66,6 +66,7 @@ from rag_agent.config import (
     RAG_MAX_USER_MESSAGE_CHARS,
     RAG_MIN_PASSWORD_LENGTH,
     RAG_RATE_LIMIT_CHAT,
+    CLIENT_MIN_PASSWORD_LENGTH,
     RAG_RATE_LIMIT_CLIENT_REGISTER,
     RAG_RATE_LIMIT_LOGIN,
     RAG_RATE_LIMIT_REGISTER,
@@ -1464,7 +1465,7 @@ class InviteCreateRequest(BaseModel):
 class ClientRegisterRequest(BaseModel):
     invite_token: str = Field(..., min_length=8, max_length=64)
     email: str = Field(..., min_length=5, max_length=RAG_USERNAME_MAX_LEN)
-    password: str = Field(..., min_length=RAG_MIN_PASSWORD_LENGTH, max_length=RAG_MAX_PASSWORD_LENGTH)
+    password: str = Field(..., min_length=CLIENT_MIN_PASSWORD_LENGTH, max_length=RAG_MAX_PASSWORD_LENGTH)
 
 
 class ClientChatRequest(BaseModel):

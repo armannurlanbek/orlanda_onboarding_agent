@@ -23,6 +23,7 @@ from sqlalchemy import delete, func, select
 
 from rag_agent.config import (
     ADMIN_USERNAMES,
+    CLIENT_MIN_PASSWORD_LENGTH,
     DATABASE_URL,
     RAG_ALLOWED_EMAIL_DOMAIN,
     RAG_MAX_PASSWORD_LENGTH,
@@ -69,12 +70,12 @@ def _verify_and_maybe_upgrade_hash(stored: str, password: str) -> tuple[bool, st
     return False, None
 
 
-def _password_policy_error(password: str) -> str | None:
+def _password_policy_error(password: str, min_length: int = RAG_MIN_PASSWORD_LENGTH) -> str | None:
     """Return Russian error message for invalid new password, or None if ok."""
     if len(password) > RAG_MAX_PASSWORD_LENGTH:
         return f"Пароль не длиннее {RAG_MAX_PASSWORD_LENGTH} символов"
-    if len(password) < RAG_MIN_PASSWORD_LENGTH:
-        return f"Пароль: минимум {RAG_MIN_PASSWORD_LENGTH} символов"
+    if len(password) < min_length:
+        return f"Пароль: минимум {min_length} символов"
     if not any(ch.isalpha() for ch in password):
         return "Пароль должен содержать хотя бы одну букву"
     if not any(ch.isdigit() for ch in password):
@@ -276,7 +277,7 @@ def register_client(username: str, password: str) -> tuple[bool, str]:
     password = (password or "").strip()
     if not _valid_any_email_username(username):
         return False, "Укажите действующий адрес электронной почты"
-    policy_err = _password_policy_error(password)
+    policy_err = _password_policy_error(password, min_length=CLIENT_MIN_PASSWORD_LENGTH)
     if policy_err:
         return False, policy_err
     return _register_db(username, password, role="client")

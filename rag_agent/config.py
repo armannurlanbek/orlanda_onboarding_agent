@@ -207,6 +207,8 @@ PROGRESS_BASE_URL = os.environ.get("PROGRESS_BASE_URL", "").strip().rstrip("/")
 PROGRESS_API_SECRET = os.environ.get("PROGRESS_API_SECRET", "").strip() or None
 # Invite links: default validity (days); admins can override per invite.
 CLIENT_INVITE_EXPIRY_DAYS = max(1, min(365, int(os.environ.get("CLIENT_INVITE_EXPIRY_DAYS", "14"))))
+# External clients get a lighter password policy than employees (min length only).
+CLIENT_MIN_PASSWORD_LENGTH = max(6, int(os.environ.get("CLIENT_MIN_PASSWORD_LENGTH", "8")))
 RAG_RATE_LIMIT_CLIENT_REGISTER = os.environ.get("RAG_RATE_LIMIT_CLIENT_REGISTER", "5/minute").strip()
 
 
