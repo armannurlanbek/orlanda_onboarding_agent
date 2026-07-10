@@ -24,12 +24,19 @@ const dict: Record<string, { en: string; he: string }> = {
   "tasks.updated": { en: "Updated", he: "עודכן" },
   "tasks.empty": { en: "No tasks to show yet.", he: "אין משימות להצגה עדיין." },
   "tasks.loadError": { en: "Could not load tasks for this project.", he: "לא ניתן לטעון משימות לפרויקט זה." },
+  "tasks.search": { en: "Search in all columns…", he: "חיפוש בכל העמודות…" },
+  "tasks.addFilter": { en: "Filter", he: "סינון" },
+  "tasks.pickValue": { en: "Pick a value…", he: "בחרו ערך…" },
+  "tasks.clearFilters": { en: "Clear all", he: "נקה הכל" },
+  "tasks.noMatches": { en: "No tasks match your search.", he: "אין משימות התואמות לחיפוש." },
 
   "assistant.title": { en: "Project assistant", he: "עוזר הפרויקט" },
   "assistant.placeholder": { en: "Ask about your projects…", he: "שאלו על הפרויקטים שלכם…" },
   "assistant.send": { en: "Send", he: "שלח" },
   "assistant.thinking": { en: "Thinking…", he: "חושב…" },
   "assistant.newChat": { en: "New conversation", he: "שיחה חדשה" },
+  "assistant.deleteChat": { en: "Delete conversation", he: "מחיקת שיחה" },
+  "assistant.noChats": { en: "No conversations yet", he: "אין שיחות עדיין" },
   "assistant.hello": {
     en: "Hi! Ask me anything about your projects: tasks, statuses, drawings, files, documents.",
     he: "שלום! שאלו אותי כל דבר על הפרויקטים שלכם: משימות, סטטוסים, שרטוטים, קבצים, מסמכים.",
@@ -46,6 +53,8 @@ const dict: Record<string, { en: string; he: string }> = {
   },
   "feedback.emailUs": { en: "Email us", he: "כתבו לנו" },
   "feedback.openForm": { en: "Open feedback form", he: "פתיחת טופס משוב" },
+  "feedback.formEn": { en: "Feedback form (English)", he: "טופס משוב (אנגלית)" },
+  "feedback.formHe": { en: "Feedback form (Hebrew)", he: "טופס משוב (עברית)" },
 
   "register.title": { en: "Create your account", he: "יצירת חשבון" },
   "register.subtitle": { en: "You were invited to the Orlanda client portal", he: "הוזמנתם לפורטל הלקוחות של Orlanda" },

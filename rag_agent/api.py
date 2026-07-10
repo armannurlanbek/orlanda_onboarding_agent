@@ -67,6 +67,7 @@ from rag_agent.config import (
     RAG_MIN_PASSWORD_LENGTH,
     RAG_RATE_LIMIT_CHAT,
     CLIENT_MIN_PASSWORD_LENGTH,
+    PROGRESS_BASE_URL,
     RAG_RATE_LIMIT_CLIENT_REGISTER,
     RAG_RATE_LIMIT_LOGIN,
     RAG_RATE_LIMIT_REGISTER,
@@ -336,11 +337,15 @@ async def _security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # frame-src whitelists the progress-tracking app: the client cabinet embeds
+    # its /p/{token} pages in an iframe (default-src 'self' would block them).
+    progress_origin = PROGRESS_BASE_URL or ""
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
+        f"frame-src 'self' {progress_origin}".rstrip() + "; "
         "connect-src 'self'"
     )
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
@@ -1470,6 +1475,7 @@ class ClientRegisterRequest(BaseModel):
 
 class ClientChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=10000)
+    conversation_id: str = Field(default="default", max_length=64)
 
 
 def _require_client(authorization: str | None = Header(default=None)) -> str:
@@ -1592,17 +1598,57 @@ async def client_portal_chat(
     username = _require_client(authorization)
     _client_portal_or_503()
     try:
-        return await client_portal.orlanda_chat(username, body.message)
+        return await client_portal.orlanda_chat(username, body.message, body.conversation_id)
     except client_portal.OrlandaApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
 
 @app.post("/client/portal/chat/reset")
-async def client_portal_chat_reset(authorization: str | None = Header(default=None)):
+async def client_portal_chat_reset(
+    authorization: str | None = Header(default=None),
+    conversation_id: str = "default",
+):
     username = _require_client(authorization)
     _client_portal_or_503()
     try:
-        await client_portal.orlanda_chat_reset(username)
+        await client_portal.orlanda_chat_reset(username, conversation_id)
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"ok": True}
+
+
+@app.get("/client/portal/chats")
+async def client_portal_chats(authorization: str | None = Header(default=None)):
+    username = _require_client(authorization)
+    _client_portal_or_503()
+    try:
+        return {"conversations": await client_portal.orlanda_conversations(username)}
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/client/portal/chat/history")
+async def client_portal_chat_history(
+    conversation_id: str,
+    authorization: str | None = Header(default=None),
+):
+    username = _require_client(authorization)
+    _client_portal_or_503()
+    try:
+        return {"messages": await client_portal.orlanda_chat_history(username, conversation_id)}
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.delete("/client/portal/chat")
+async def client_portal_chat_delete(
+    conversation_id: str,
+    authorization: str | None = Header(default=None),
+):
+    username = _require_client(authorization)
+    _client_portal_or_503()
+    try:
+        await client_portal.orlanda_delete_conversation(username, conversation_id)
     except client_portal.OrlandaApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return {"ok": True}

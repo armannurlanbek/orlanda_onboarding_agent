@@ -80,14 +80,38 @@ async def orlanda_tasks_table(user: str) -> dict:
     return await _orlanda_request("GET", "/client/tasks-table", params={"user": user})
 
 
-async def orlanda_chat(user: str, question: str) -> dict:
+async def orlanda_chat(user: str, question: str, conversation_id: str = "default") -> dict:
     return await _orlanda_request(
-        "POST", "/client/chat", json={"user": user, "question": question}
+        "POST",
+        "/client/chat",
+        json={"user": user, "question": question, "conversation_id": conversation_id},
     )
 
 
-async def orlanda_chat_reset(user: str) -> None:
-    await _orlanda_request("POST", "/client/chat/reset", json={"user": user})
+async def orlanda_chat_reset(user: str, conversation_id: str = "default") -> None:
+    await _orlanda_request(
+        "POST", "/client/chat/reset", json={"user": user, "conversation_id": conversation_id}
+    )
+
+
+async def orlanda_conversations(user: str) -> list[dict]:
+    data = await _orlanda_request("GET", "/client/chat/conversations", params={"user": user})
+    return data.get("conversations", [])
+
+
+async def orlanda_chat_history(user: str, conversation_id: str) -> list[dict]:
+    data = await _orlanda_request(
+        "GET", "/client/chat/history", params={"user": user, "conversation_id": conversation_id}
+    )
+    return data.get("messages", [])
+
+
+async def orlanda_delete_conversation(user: str, conversation_id: str) -> None:
+    await _orlanda_request(
+        "DELETE",
+        "/client/chat/conversation",
+        params={"user": user, "conversation_id": conversation_id},
+    )
 
 
 # ── Progress-tracking links ──────────────────────────────────────────────────

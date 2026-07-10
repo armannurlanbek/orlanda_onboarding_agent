@@ -32,19 +32,28 @@ export default function ClientFeedbackPage() {
 
         {isLoading && <Skeleton className="h-16 w-full" />}
 
-        <div className="space-y-2">
-          {links.map((link) => {
-            const url = (lang === "he" ? link.url_he : link.url_en) || link.url_en || link.url_he;
-            if (!url) return null;
-            return (
-              <Button key={link.client + url} asChild className="gap-2">
-                <a href={url} target="_blank" rel="noreferrer">
-                  <ExternalLink className="h-4 w-4" /> {t("feedback.openForm")}
-                  {links.length > 1 && link.client ? ` — ${link.client}` : ""}
-                </a>
-              </Button>
-            );
-          })}
+        <div className="space-y-3">
+          {links.map((link) => (
+            <div key={link.client} className="flex flex-wrap items-center gap-2">
+              {links.length > 1 && link.client && (
+                <span className="text-sm font-medium w-full">{link.client}</span>
+              )}
+              {link.url_en && (
+                <Button asChild variant={lang === "he" ? "outline" : "default"} className="gap-2">
+                  <a href={link.url_en} target="_blank" rel="noreferrer">
+                    <ExternalLink className="h-4 w-4" /> {t("feedback.formEn")}
+                  </a>
+                </Button>
+              )}
+              {link.url_he && (
+                <Button asChild variant={lang === "he" ? "default" : "outline"} className="gap-2">
+                  <a href={link.url_he} target="_blank" rel="noreferrer">
+                    <ExternalLink className="h-4 w-4" /> {t("feedback.formHe")}
+                  </a>
+                </Button>
+              )}
+            </div>
+          ))}
         </div>
 
         <div>

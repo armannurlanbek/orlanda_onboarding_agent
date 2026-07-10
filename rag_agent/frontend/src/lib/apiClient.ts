@@ -225,11 +225,32 @@ export const api = {
     async tasksTable(token: string): Promise<ClientTasksTable> {
       return request("/client/portal/tasks-table", { token });
     },
-    async chat(token: string, message: string): Promise<ClientChatReply> {
-      return request("/client/portal/chat", { method: "POST", token, body: { message } });
+    async chat(token: string, message: string, conversationId = "default"): Promise<ClientChatReply> {
+      return request("/client/portal/chat", {
+        method: "POST",
+        token,
+        body: { message, conversation_id: conversationId },
+      });
     },
-    async chatReset(token: string): Promise<void> {
-      await request("/client/portal/chat/reset", { method: "POST", token });
+    async chats(token: string): Promise<{ id: string; title: string; updated_at: string }[]> {
+      const data = await request<{ conversations: { id: string; title: string; updated_at: string }[] }>(
+        "/client/portal/chats",
+        { token },
+      );
+      return data.conversations || [];
+    },
+    async chatHistory(token: string, conversationId: string): Promise<{ role: string; content: string }[]> {
+      const data = await request<{ messages: { role: string; content: string }[] }>(
+        `/client/portal/chat/history?conversation_id=${encodeURIComponent(conversationId)}`,
+        { token },
+      );
+      return data.messages || [];
+    },
+    async deleteChat(token: string, conversationId: string): Promise<void> {
+      await request(`/client/portal/chat?conversation_id=${encodeURIComponent(conversationId)}`, {
+        method: "DELETE",
+        token,
+      });
     },
     async progress(token: string): Promise<ClientProgressProject[]> {
       const data = await request<{ projects: ClientProgressProject[] }>("/client/portal/progress", { token });
