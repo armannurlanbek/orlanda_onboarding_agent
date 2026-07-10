@@ -1654,6 +1654,28 @@ async def admin_client_access_get(
     return {"username": client_username, "projects": projects}
 
 
+@app.post("/admin/clients/{client_username}/reset-password")
+def admin_client_reset_password(
+    request: Request,
+    client_username: str,
+    authorization: str | None = Header(default=None),
+):
+    """Set a fresh random password for a client account (admin hands it over)."""
+    admin_username = _require_admin(authorization)
+    from rag_agent.auth import reset_client_password
+
+    ok, result = reset_client_password(client_username)
+    if not ok:
+        raise HTTPException(status_code=404, detail=result)
+    write_audit(
+        "client_password_reset",
+        admin_username,
+        target=client_username,
+        ip_address=request.client.host if request.client else "",
+    )
+    return {"username": client_username, "temporary_password": result}
+
+
 @app.put("/admin/clients/{client_username}/access")
 async def admin_client_access_put(
     request: Request,

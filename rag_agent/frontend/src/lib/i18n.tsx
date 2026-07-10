@@ -55,6 +55,10 @@ const dict: Record<string, { en: string; he: string }> = {
   "register.repeat": { en: "Repeat password", he: "אימות סיסמה" },
   "register.submit": { en: "Create account", he: "צור חשבון" },
   "register.mismatch": { en: "Passwords do not match", he: "הסיסמאות אינן תואמות" },
+  "register.passwordHint": {
+    en: "At least 8 characters, with letters and digits",
+    he: "לפחות 8 תווים, כולל אותיות וספרות",
+  },
   "register.invalidInvite": { en: "This invite link is not valid.", he: "קישור ההזמנה אינו תקף." },
   "register.checking": { en: "Checking your invite…", he: "בודק את ההזמנה…" },
   "register.haveAccount": { en: "Already have an account?", he: "כבר יש לכם חשבון?" },

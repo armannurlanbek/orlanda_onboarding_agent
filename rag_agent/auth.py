@@ -24,6 +24,7 @@ from sqlalchemy import delete, func, select
 from rag_agent.config import (
     ADMIN_USERNAMES,
     CLIENT_MIN_PASSWORD_LENGTH,
+    CLIENT_SESSION_EXPIRY_DAYS,
     DATABASE_URL,
     RAG_ALLOWED_EMAIL_DOMAIN,
     RAG_MAX_PASSWORD_LENGTH,
@@ -283,6 +284,39 @@ def register_client(username: str, password: str) -> tuple[bool, str]:
     return _register_db(username, password, role="client")
 
 
+def reset_client_password(username: str) -> tuple[bool, str]:
+    """Admin action: set a fresh random password for a client account.
+
+    Returns (ok, new_password_or_error). The new password is NOT flagged
+    must_change: the client cabinet has no password-change screen yet, and a
+    forced-rotation flag would lock the client out of every portal endpoint.
+    All existing sessions are revoked.
+    """
+    if not DATABASE_URL:
+        return False, "Сервер не настроен: задайте DATABASE_URL (PostgreSQL)."
+    from rag_agent.db.models import User
+    from rag_agent.db.session import get_session_factory
+
+    new_password = _random_temp_password(12)
+    db = get_session_factory()()
+    try:
+        user = db.scalar(select(User).where(func.lower(User.username) == (username or "").strip().lower()))
+        if not user or user.role != "client":
+            db.rollback()
+            return False, "Клиентский аккаунт не найден"
+        user.password_hash = _hash_argon2(new_password)
+        user.must_change_password = False
+        user.password_changed_at = datetime.now(timezone.utc)
+        _invalidate_all_user_sessions(db, user.id)
+        db.commit()
+        return True, new_password
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def delete_user_account(username: str) -> bool:
     """Hard-delete a user row (sessions cascade). Used to roll back a client
     registration whose access provisioning in orlanda-api failed."""
@@ -527,7 +561,11 @@ def change_password(
 def _create_token(username: str, *, user_id: uuid.UUID) -> str:
     """Issue bearer token; persist to auth_sessions."""
     raw = secrets.token_urlsafe(32)
-    expiry_ts = time.time() + RAG_SESSION_EXPIRY_DAYS * 86400
+    # Clients get long-lived sessions (one login lasts months); employees keep the default.
+    expiry_days = (
+        CLIENT_SESSION_EXPIRY_DAYS if get_user_role(username) == "client" else RAG_SESSION_EXPIRY_DAYS
+    )
+    expiry_ts = time.time() + expiry_days * 86400
     expires_at = datetime.fromtimestamp(expiry_ts, tz=timezone.utc)
 
     from rag_agent.db.models import AuthSession

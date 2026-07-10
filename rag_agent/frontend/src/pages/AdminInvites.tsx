@@ -16,7 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import type { OrlandaProject } from "@/lib/types";
-import { Copy, Pencil, Trash2, X } from "lucide-react";
+import { Copy, KeyRound, Pencil, Trash2, X } from "lucide-react";
 
 function ProjectPicker({
   projects,
@@ -175,6 +175,20 @@ export default function AdminInvitesPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["client-invites"] }),
   });
 
+  const resetPwdM = useMutation({
+    mutationFn: (username: string) => api.adminInvites.resetClientPassword(token!, username),
+    onSuccess: (newPassword, username) => {
+      navigator.clipboard?.writeText(newPassword).catch(() => undefined);
+      toast({
+        title: `Новый пароль для ${username}`,
+        description: `${newPassword} — скопирован в буфер, передайте клиенту`,
+        duration: 30000,
+      });
+    },
+    onError: (e) =>
+      toast({ title: "Ошибка", description: e instanceof Error ? e.message : "Не удалось сбросить пароль", variant: "destructive" }),
+  });
+
   const toggle = (id: number) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -254,6 +268,19 @@ export default function AdminInvitesPage() {
                       onClick={() => setEditingClient(editingClient === c.username ? null : c.username)}
                     >
                       <Pencil className="h-3.5 w-3.5" /> Доступы
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-1.5"
+                      disabled={resetPwdM.isPending}
+                      onClick={() => {
+                        if (window.confirm(`Сбросить пароль для ${c.username}? Текущие сессии клиента будут разлогинены.`)) {
+                          resetPwdM.mutate(c.username);
+                        }
+                      }}
+                    >
+                      <KeyRound className="h-3.5 w-3.5" /> Сбросить пароль
                     </Button>
                   </div>
                   {editingClient === c.username && projectsQ.data && (

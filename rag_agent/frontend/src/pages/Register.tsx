@@ -14,6 +14,44 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Eye, EyeOff } from "lucide-react";
+
+function PasswordInput({
+  id,
+  value,
+  onChange,
+  minLength,
+}: {
+  id: string;
+  value: string;
+  onChange: (v: string) => void;
+  minLength?: number;
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div className="relative" dir="ltr">
+      <Input
+        id={id}
+        type={visible ? "text" : "password"}
+        required
+        minLength={minLength}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="pr-10"
+        autoComplete="new-password"
+      />
+      <button
+        type="button"
+        tabIndex={-1}
+        onClick={() => setVisible((v) => !v)}
+        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+        aria-label={visible ? "Hide password" : "Show password"}
+      >
+        {visible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+      </button>
+    </div>
+  );
+}
 
 function RegisterForm() {
   const [params] = useSearchParams();
@@ -109,11 +147,12 @@ function RegisterForm() {
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="password">{t("register.password")}</Label>
-                  <Input id="password" type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} dir="ltr" />
+                  <PasswordInput id="password" value={password} onChange={setPassword} minLength={8} />
+                  <p className="text-xs text-muted-foreground">{t("register.passwordHint")}</p>
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="repeat">{t("register.repeat")}</Label>
-                  <Input id="repeat" type="password" required value={repeat} onChange={(e) => setRepeat(e.target.value)} dir="ltr" />
+                  <PasswordInput id="repeat" value={repeat} onChange={setRepeat} />
                 </div>
                 {error && <p className="text-sm text-destructive">{error}</p>}
                 <Button type="submit" className="w-full" disabled={busy}>

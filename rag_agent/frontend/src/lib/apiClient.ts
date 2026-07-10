@@ -278,6 +278,13 @@ export const api = {
       );
       return data.project_ids || [];
     },
+    async resetClientPassword(token: string, username: string): Promise<string> {
+      const data = await request<{ temporary_password: string }>(
+        `/admin/clients/${encodeURIComponent(username)}/reset-password`,
+        { method: "POST", token },
+      );
+      return data.temporary_password;
+    },
   },
 
   chat: {
