@@ -1,8 +1,9 @@
 /**
- * Cabinet landing tab: the tasks table (RAV BARIACH columns) with Monday-style
- * filtering — a global search box that matches any cell plus stackable
- * column/value filters (AND). Data refetches every 60s; Monday webhooks keep
- * the server cache fresh, so no manual refresh button is needed.
+ * Cabinet landing tab: the tasks table (RAV BARIACH columns) with Excel/Monday-style
+ * filtering — a global search box that matches any cell, plus per-column header
+ * filter popovers with a checkbox list of distinct values (multi-select per column,
+ * AND across columns). Data refetches every 60s; Monday webhooks keep the server
+ * cache fresh, so no manual refresh button is needed.
  */
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -10,13 +11,14 @@ import { ClientShell } from "@/components/ClientShell";
 import { api } from "@/lib/apiClient";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import type { ClientTaskBlock } from "@/lib/types";
-import { Plus, X } from "lucide-react";
+import { Filter } from "lucide-react";
 
-type ColumnFilter = { column: string; value: string };
+type ColumnFilters = Record<string, Set<string>>;
 
 function statusChip(value: string, colors: Record<string, string>) {
   const hex = colors[value];
@@ -31,113 +33,104 @@ function statusChip(value: string, colors: Record<string, string>) {
   );
 }
 
-function rowMatches(row: Record<string, string>, search: string, filters: ColumnFilter[]): boolean {
+function rowMatches(row: Record<string, string>, search: string, filters: ColumnFilters): boolean {
   if (search) {
     const q = search.toLowerCase();
     if (!Object.values(row).some((v) => String(v ?? "").toLowerCase().includes(q))) return false;
   }
-  return filters.every((f) => String(row[f.column] ?? "") === f.value);
+  for (const [column, values] of Object.entries(filters)) {
+    if (!values.size) continue;
+    if (!values.has(String(row[column] ?? ""))) return false;
+  }
+  return true;
 }
 
-function FilterBar({
-  headers,
+function ColumnFilterPopover({
+  column,
   blocks,
-  search,
-  setSearch,
   filters,
   setFilters,
 }: {
-  headers: string[];
+  column: string;
   blocks: ClientTaskBlock[];
-  search: string;
-  setSearch: (v: string) => void;
-  filters: ColumnFilter[];
-  setFilters: (f: ColumnFilter[]) => void;
+  filters: ColumnFilters;
+  setFilters: (f: ColumnFilters) => void;
 }) {
   const { t } = useI18n();
-  const [draftColumn, setDraftColumn] = useState("");
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
 
-  const valuesFor = (column: string) => {
+  const allValues = useMemo(() => {
     const values = new Set<string>();
-    blocks.forEach((b) => b.rows.forEach((r) => {
-      const v = String(r[column] ?? "").trim();
-      if (v) values.add(v);
-    }));
-    return [...values].sort();
+    blocks.forEach((b) => b.rows.forEach((r) => values.add(String(r[column] ?? "").trim())));
+    return [...values].sort((a, b) => a.localeCompare(b));
+  }, [blocks, column]);
+
+  const shownValues = query
+    ? allValues.filter((v) => (v || "—").toLowerCase().includes(query.toLowerCase()))
+    : allValues;
+
+  const selected = filters[column] ?? new Set<string>();
+  const isActive = selected.size > 0;
+
+  const updateColumn = (next: Set<string>) => {
+    const nextFilters = { ...filters };
+    if (next.size) nextFilters[column] = next;
+    else delete nextFilters[column];
+    setFilters(nextFilters);
+  };
+
+  const toggleValue = (value: string, checked: boolean) => {
+    const next = new Set(selected);
+    if (checked) next.add(value);
+    else next.delete(value);
+    updateColumn(next);
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <Input
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder={t("tasks.search")}
-        className="w-64 max-w-full"
-      />
-
-      {filters.map((f, i) => (
-        <span
-          key={`${f.column}-${f.value}-${i}`}
-          className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 text-foreground px-3 py-1 text-xs"
-        >
-          <b>{f.column}</b>: {f.value}
-          <button
-            onClick={() => setFilters(filters.filter((_, j) => j !== i))}
-            className="text-muted-foreground hover:text-destructive"
-          >
-            <X className="h-3 w-3" />
-          </button>
-        </span>
-      ))}
-
-      {draftColumn ? (
-        <span className="inline-flex items-center gap-1.5">
-          <select
-            className="h-8 rounded-md border border-border bg-card px-2 text-xs"
-            value={draftColumn}
-            onChange={(e) => setDraftColumn(e.target.value)}
-          >
-            {headers.map((h) => (
-              <option key={h} value={h}>{h}</option>
-            ))}
-          </select>
-          <select
-            className="h-8 rounded-md border border-border bg-card px-2 text-xs max-w-56"
-            defaultValue=""
-            onChange={(e) => {
-              if (e.target.value) {
-                setFilters([...filters, { column: draftColumn, value: e.target.value }]);
-                setDraftColumn("");
-              }
-            }}
-          >
-            <option value="" disabled>{t("tasks.pickValue")}</option>
-            {valuesFor(draftColumn).map((v) => (
-              <option key={v} value={v}>{v}</option>
-            ))}
-          </select>
-          <button onClick={() => setDraftColumn("")} className="text-muted-foreground hover:text-foreground">
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </span>
-      ) : (
-        <Button variant="outline" size="sm" className="gap-1.5 h-8" onClick={() => setDraftColumn(headers[0])}>
-          <Plus className="h-3.5 w-3.5" /> {t("tasks.addFilter")}
-        </Button>
-      )}
-
-      {(filters.length > 0 || search) && (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
         <button
-          className="text-xs text-primary hover:underline"
-          onClick={() => {
-            setFilters([]);
-            setSearch("");
-          }}
+          className={`shrink-0 ${isActive ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}
+          aria-label={column}
         >
-          {t("tasks.clearFilters")}
+          <Filter className="h-3 w-3" />
         </button>
-      )}
-    </div>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-56 p-2 text-foreground">
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={t("tasks.filterSearch")}
+          className="h-7 text-xs mb-2"
+        />
+        <div className="flex items-center justify-between mb-1.5 text-xs">
+          <button
+            className="text-primary hover:underline"
+            onClick={() => updateColumn(new Set(allValues))}
+          >
+            {t("tasks.selectAll")}
+          </button>
+          <button
+            className="text-muted-foreground hover:text-destructive"
+            onClick={() => updateColumn(new Set())}
+          >
+            {t("tasks.clearColumn")}
+          </button>
+        </div>
+        <div className="max-h-56 overflow-y-auto space-y-1">
+          {shownValues.map((v) => (
+            <label key={v} className="flex items-center gap-2 text-xs cursor-pointer py-0.5">
+              <Checkbox
+                checked={selected.has(v)}
+                onCheckedChange={(checked) => toggleValue(v, checked === true)}
+              />
+              <span className="truncate">{v || "—"}</span>
+            </label>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -145,10 +138,16 @@ function TaskTable({
   rows,
   headers,
   colors,
+  blocks,
+  filters,
+  setFilters,
 }: {
   rows: Record<string, string>[];
   headers: string[];
   colors: Record<string, string>;
+  blocks: ClientTaskBlock[];
+  filters: ColumnFilters;
+  setFilters: (f: ColumnFilters) => void;
 }) {
   const { t } = useI18n();
   if (!rows.length) return <p className="text-sm text-muted-foreground py-4">{t("tasks.empty")}</p>;
@@ -159,7 +158,10 @@ function TaskTable({
           <tr>
             {headers.map((h) => (
               <th key={h} className="px-3 py-2 text-left font-semibold whitespace-nowrap text-muted-foreground">
-                {h}
+                <span className="inline-flex items-center gap-1.5">
+                  {h}
+                  <ColumnFilterPopover column={h} blocks={blocks} filters={filters} setFilters={setFilters} />
+                </span>
               </th>
             ))}
           </tr>
@@ -185,7 +187,7 @@ export default function ClientTasksPage() {
   const { t, lang } = useI18n();
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
-  const [filters, setFilters] = useState<ColumnFilter[]>([]);
+  const [filters, setFilters] = useState<ColumnFilters>({});
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["client-tasks"],
@@ -194,16 +196,17 @@ export default function ClientTasksPage() {
     refetchInterval: 60_000,
   });
 
+  const hasFilters = Object.keys(filters).length > 0;
   const blocks = data?.projects ?? [];
   const visible = useMemo(() => {
     const byProject = selectedId == null ? blocks : blocks.filter((b) => b.project_id === selectedId);
-    if (!search && !filters.length) return byProject;
+    if (!search && !hasFilters) return byProject;
     return byProject
       .map((b) => ({ ...b, rows: b.rows.filter((r) => rowMatches(r, search, filters)) }))
-      .filter((b) => b.rows.length > 0 || (!search && !filters.length));
-  }, [blocks, selectedId, search, filters]);
+      .filter((b) => b.rows.length > 0 || (!search && !hasFilters));
+  }, [blocks, selectedId, search, filters, hasFilters]);
 
-  const nothingFound = Boolean((search || filters.length) && blocks.length && !visible.length);
+  const nothingFound = Boolean((search || hasFilters) && blocks.length && !visible.length);
 
   return (
     <ClientShell>
@@ -227,14 +230,25 @@ export default function ClientTasksPage() {
         </div>
 
         {data && blocks.length > 0 && (
-          <FilterBar
-            headers={data.headers}
-            blocks={blocks}
-            search={search}
-            setSearch={setSearch}
-            filters={filters}
-            setFilters={setFilters}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t("tasks.search")}
+              className="w-64 max-w-full"
+            />
+            {(hasFilters || search) && (
+              <button
+                className="text-xs text-primary hover:underline"
+                onClick={() => {
+                  setFilters({});
+                  setSearch("");
+                }}
+              >
+                {t("tasks.clearFilters")}
+              </button>
+            )}
+          </div>
         )}
 
         {isLoading && (
@@ -262,7 +276,14 @@ export default function ClientTasksPage() {
             {block.error ? (
               <p className="text-sm text-destructive py-4">{t("tasks.loadError")}</p>
             ) : (
-              <TaskTable rows={block.rows} headers={data!.headers} colors={data!.status_colors} />
+              <TaskTable
+                rows={block.rows}
+                headers={data!.headers}
+                colors={data!.status_colors}
+                blocks={blocks}
+                filters={filters}
+                setFilters={setFilters}
+              />
             )}
           </section>
         ))}

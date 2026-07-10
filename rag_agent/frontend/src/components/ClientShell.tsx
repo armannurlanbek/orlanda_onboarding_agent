@@ -4,7 +4,7 @@
  * language toggle and logout. All labels come from the i18n dictionary.
  */
 import { NavLink, useNavigate } from "react-router-dom";
-import { Logo } from "./Logo";
+import { ClientLogo } from "./ClientLogo";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
@@ -23,10 +23,10 @@ export function ClientShell({ children }: { children: React.ReactNode }) {
   const nav = useNavigate();
 
   return (
-    <div className="min-h-screen flex bg-background">
+    <div className="client-theme min-h-screen flex bg-background">
       <aside className="w-56 shrink-0 border-e border-border bg-card flex flex-col">
         <div className="h-16 flex items-center px-4 border-b border-border">
-          <Logo />
+          <ClientLogo />
         </div>
 
         <nav className="flex-1 p-2 space-y-1">

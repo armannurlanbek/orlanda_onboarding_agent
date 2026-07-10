@@ -9,7 +9,7 @@ import { useQuery } from "@tanstack/react-query";
 import { I18nProvider, useI18n } from "@/lib/i18n";
 import { api } from "@/lib/apiClient";
 import { useAuth } from "@/lib/auth";
-import { Logo } from "@/components/Logo";
+import { ClientLogo } from "@/components/ClientLogo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -93,11 +93,11 @@ function RegisterForm() {
   const invalid = !inviteToken || (preview && !preview.valid);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+    <div className="client-theme min-h-screen flex items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-3">
           <div className="flex items-center justify-between">
-            <Logo />
+            <ClientLogo />
             <div className="flex rounded-md border border-border overflow-hidden text-xs font-semibold">
               <button
                 type="button"

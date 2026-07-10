@@ -110,6 +110,14 @@
     --sidebar-border: 217 33% 17%;
     --sidebar-ring: 239 84% 67%;
   }
+
+  /* Client cabinet — Orlanda brand yellow (overrides indigo primary). */
+  .client-theme {
+    --primary: 43 96% 50%;
+    --primary-foreground: 30 25% 10%;
+    --primary-glow: 46 100% 62%;
+    --ring: 43 96% 50%;
+  }
 }
 
 @layer base {

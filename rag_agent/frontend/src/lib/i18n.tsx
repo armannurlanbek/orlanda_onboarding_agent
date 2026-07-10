@@ -10,6 +10,7 @@ export type Lang = "en" | "he";
 const LANG_KEY = "orlanda.lang";
 
 const dict: Record<string, { en: string; he: string }> = {
+  "brand.cabinet": { en: "Client Cabinet", he: "פורטל לקוחות" },
   "nav.tasks": { en: "Tasks", he: "משימות" },
   "nav.assistant": { en: "Assistant", he: "עוזר" },
   "nav.progress": { en: "Progress", he: "התקדמות" },
@@ -29,6 +30,9 @@ const dict: Record<string, { en: string; he: string }> = {
   "tasks.pickValue": { en: "Pick a value…", he: "בחרו ערך…" },
   "tasks.clearFilters": { en: "Clear all", he: "נקה הכל" },
   "tasks.noMatches": { en: "No tasks match your search.", he: "אין משימות התואמות לחיפוש." },
+  "tasks.selectAll": { en: "Select all", he: "בחר הכל" },
+  "tasks.clearColumn": { en: "Clear", he: "נקה" },
+  "tasks.filterSearch": { en: "Search values…", he: "חיפוש ערכים…" },
 
   "assistant.title": { en: "Project assistant", he: "עוזר הפרויקט" },
   "assistant.placeholder": { en: "Ask about your projects…", he: "שאלו על הפרויקטים שלכם…" },
