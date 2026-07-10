@@ -20,6 +20,7 @@ import ClientTasksPage from "./pages/client/ClientTasks";
 import ClientAssistantPage from "./pages/client/ClientAssistant";
 import ClientProgressPage from "./pages/client/ClientProgress";
 import ClientFeedbackPage from "./pages/client/ClientFeedback";
+import ClientSettingsPage from "./pages/client/ClientSettings";
 import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient();
@@ -55,6 +56,7 @@ const App = () => (
             <Route path="/client/assistant" element={<ClientRoute><ClientAssistantPage /></ClientRoute>} />
             <Route path="/client/progress" element={<ClientRoute><ClientProgressPage /></ClientRoute>} />
             <Route path="/client/feedback" element={<ClientRoute><ClientFeedbackPage /></ClientRoute>} />
+            <Route path="/client/settings" element={<ClientRoute><ClientSettingsPage /></ClientRoute>} />
             <Route path="/components" element={<ComponentsPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

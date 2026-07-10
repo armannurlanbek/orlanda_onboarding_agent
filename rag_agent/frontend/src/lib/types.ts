@@ -153,6 +153,11 @@ export type ClientAccount = {
   created_at: string | null;
 };
 
+export type CustomerDirectoryEntry = {
+  customer: string;
+  projects: { id: number; name: string }[];
+};
+
 export type MemorySettings = {
   // Per-user toggle.
   enabled: boolean;

@@ -15,8 +15,43 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import type { OrlandaProject } from "@/lib/types";
+import type { CustomerDirectoryEntry, OrlandaProject } from "@/lib/types";
 import { Copy, KeyRound, Pencil, Trash2, X } from "lucide-react";
+
+function CustomerSelect({
+  customers,
+  value,
+  onChange,
+}: {
+  customers: CustomerDirectoryEntry[];
+  value: string;
+  onChange: (customer: string) => void;
+}) {
+  return (
+    <select
+      className="h-9 rounded-md border border-border bg-card px-3 text-sm w-full"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      <option value="">— все проекты —</option>
+      {customers.map((c) => (
+        <option key={c.customer} value={c.customer}>
+          {c.customer} ({c.projects.length})
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function restrictProjects(
+  projects: OrlandaProject[],
+  customers: CustomerDirectoryEntry[],
+  customer: string,
+): OrlandaProject[] {
+  if (!customer) return projects;
+  const allowed = new Set(customers.find((c) => c.customer === customer)?.projects.map((p) => p.id) ?? []);
+  return projects.filter((p) => allowed.has(p.id));
+}
 
 function ProjectPicker({
   projects,
@@ -65,15 +100,18 @@ function ProjectPicker({
 function ClientAccessEditor({
   username,
   projects,
+  customers,
   onClose,
 }: {
   username: string;
   projects: OrlandaProject[];
+  customers: CustomerDirectoryEntry[];
   onClose: () => void;
 }) {
   const { token } = useAuth();
   const { toast } = useToast();
   const [selected, setSelected] = useState<Set<number> | null>(null);
+  const [customer, setCustomer] = useState("");
 
   const accessQ = useQuery({
     queryKey: ["client-access", username],
@@ -110,7 +148,14 @@ function ClientAccessEditor({
       {accessQ.isLoading ? (
         <Skeleton className="h-24 w-full" />
       ) : (
-        <ProjectPicker projects={projects} selected={current} onToggle={toggle} />
+        <>
+          <CustomerSelect customers={customers} value={customer} onChange={setCustomer} />
+          <ProjectPicker
+            projects={restrictProjects(projects, customers, customer)}
+            selected={current}
+            onToggle={toggle}
+          />
+        </>
       )}
       <Button size="sm" onClick={() => saveM.mutate()} disabled={saveM.isPending || accessQ.isLoading}>
         {saveM.isPending ? "Сохранение…" : "Сохранить доступы"}
@@ -129,10 +174,17 @@ export default function AdminInvitesPage() {
   const [expiresDays, setExpiresDays] = useState(14);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [editingClient, setEditingClient] = useState<string | null>(null);
+  const [inviteCustomer, setInviteCustomer] = useState("");
 
   const projectsQ = useQuery({
     queryKey: ["orlanda-projects"],
     queryFn: () => api.adminInvites.orlandaProjects(token!),
+    enabled: Boolean(token),
+    staleTime: 60_000,
+  });
+  const customersQ = useQuery({
+    queryKey: ["orlanda-customers"],
+    queryFn: () => api.adminInvites.customers(token!),
     enabled: Boolean(token),
     staleTime: 60_000,
   });
@@ -229,10 +281,29 @@ export default function AdminInvitesPage() {
             </div>
 
             <div className="space-y-2">
+              <Label>Клиент (по задачам Monday) — сузит список проектов</Label>
+              <CustomerSelect
+                customers={customersQ.data ?? []}
+                value={inviteCustomer}
+                onChange={(customer) => {
+                  setInviteCustomer(customer);
+                  setSelected(new Set()); // старый выбор мог быть вне нового списка
+                  if (customer && (!company.trim() || company === inviteCustomer)) setCompany(customer);
+                }}
+              />
+            </div>
+
+            <div className="space-y-2">
               <Label>Проекты (доступ клиента)</Label>
               {projectsQ.isLoading && <Skeleton className="h-24 w-full" />}
               {projectsQ.isError && <p className="text-sm text-destructive">Не удалось загрузить проекты из OrlandaBot</p>}
-              {projectsQ.data && <ProjectPicker projects={projectsQ.data} selected={selected} onToggle={toggle} />}
+              {projectsQ.data && (
+                <ProjectPicker
+                  projects={restrictProjects(projectsQ.data, customersQ.data ?? [], inviteCustomer)}
+                  selected={selected}
+                  onToggle={toggle}
+                />
+              )}
             </div>
 
             <Button onClick={() => createM.mutate()} disabled={!selected.size || createM.isPending}>
@@ -287,6 +358,7 @@ export default function AdminInvitesPage() {
                     <ClientAccessEditor
                       username={c.username}
                       projects={projectsQ.data}
+                      customers={customersQ.data ?? []}
                       onClose={() => setEditingClient(null)}
                     />
                   )}

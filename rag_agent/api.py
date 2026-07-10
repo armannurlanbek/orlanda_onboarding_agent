@@ -34,6 +34,7 @@ from rag_agent.agent import (
     set_active_model,
 )
 from rag_agent.auth import (
+    change_client_email as auth_change_client_email,
     change_password as auth_change_password,
     get_user_id,
     get_user_role,
@@ -1478,6 +1479,11 @@ class ClientChatRequest(BaseModel):
     conversation_id: str = Field(default="default", max_length=64)
 
 
+class ClientEmailChangeRequest(BaseModel):
+    new_email: str = Field(..., min_length=5, max_length=RAG_USERNAME_MAX_LEN)
+    password: str = Field(..., min_length=1, max_length=RAG_MAX_PASSWORD_LENGTH)
+
+
 def _require_client(authorization: str | None = Header(default=None)) -> str:
     """Require a logged-in client (admins allowed too, for testing the cabinet)."""
     username = _get_username(authorization)
@@ -1498,6 +1504,17 @@ async def admin_orlanda_projects(authorization: str | None = Header(default=None
     _client_portal_or_503()
     try:
         return {"projects": await client_portal.orlanda_all_projects()}
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/admin/orlanda/customers")
+async def admin_orlanda_customers(authorization: str | None = Header(default=None)):
+    """Customer directory for client-first project selection in the invite UI."""
+    _require_admin(authorization)
+    _client_portal_or_503()
+    try:
+        return {"customers": await client_portal.orlanda_customers()}
     except client_portal.OrlandaApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
@@ -1672,6 +1689,48 @@ async def client_portal_feedback(authorization: str | None = Header(default=None
         return {"links": await client_portal.orlanda_feedback_links(username)}
     except client_portal.OrlandaApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/client/portal/email", response_model=AuthResponse)
+async def client_portal_email_change(
+    body: ClientEmailChangeRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Change a client's e-mail (their login identity).
+
+    The client's e-mail is also their identity in orlanda-api (ProjectMember ACL +
+    Redis assistant history), so the mirror row is renamed there first. Everything
+    that can fail on validity/credentials is checked with a dry run *before* the
+    orlanda-api call; if the real rename on this side still fails afterwards
+    (e.g. a race), the orlanda-side rename is rolled back so the two systems never
+    drift out of sync. Admin accounts (used to test the cabinet) are rejected —
+    renaming them would touch their real employee login.
+    """
+    username = _require_client(authorization)
+    if get_user_role(username) == "admin":
+        raise HTTPException(status_code=403, detail="Только для клиентских аккаунтов")
+    _client_portal_or_503()
+
+    new_email = body.new_email.strip().lower()
+
+    ok, err = auth_change_client_email(username, new_email, body.password, dry_run=True)
+    if not ok:
+        raise HTTPException(status_code=400, detail=err)
+
+    try:
+        await client_portal.orlanda_rename(username, new_email)
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    ok, result = auth_change_client_email(username, new_email, body.password)
+    if not ok:
+        try:
+            await client_portal.orlanda_rename(new_email, username)
+        except client_portal.OrlandaApiError:
+            logger.error("Rollback of orlanda-api rename %s -> %s failed", new_email, username)
+        raise HTTPException(status_code=400, detail=result)
+
+    return AuthResponse(token=result, username=new_email, role="client")
 
 
 # ── Admin: client accounts & their project access ────────────────────────────

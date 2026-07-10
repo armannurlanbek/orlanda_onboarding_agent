@@ -64,6 +64,12 @@ async def orlanda_all_projects() -> list[dict]:
     return data.get("projects", [])
 
 
+async def orlanda_customers() -> list[dict]:
+    """Customer -> projects directory (derived from the tasks snapshot)."""
+    data = await _orlanda_request("GET", "/client/customers")
+    return data.get("customers", [])
+
+
 async def orlanda_get_access(user: str) -> list[dict]:
     data = await _orlanda_request("GET", "/client/access", params={"user": user})
     return data.get("projects", [])
@@ -74,6 +80,13 @@ async def orlanda_sync_access(user: str, project_ids: list[int]) -> list[int]:
         "PUT", "/client/access", json={"user": user, "project_ids": project_ids}
     )
     return data.get("project_ids", [])
+
+
+async def orlanda_rename(user: str, new_user: str) -> None:
+    """Rename a client's identity in orlanda-api (ProjectMember ACL + Redis history)
+    after they change their e-mail on the platform. Raises OrlandaApiError on any
+    non-200 response, including a 409 conflict (target already taken)."""
+    await _orlanda_request("POST", "/client/rename", json={"user": user, "new_user": new_user})
 
 
 async def orlanda_tasks_table(user: str) -> dict:

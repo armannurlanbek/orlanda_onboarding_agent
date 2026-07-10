@@ -10,6 +10,7 @@ type AuthState = {
   register: (u: string, p: string) => Promise<void>;
   registerClient: (inviteToken: string, email: string, password: string) => Promise<void>;
   changePassword: (payload: { currentPassword?: string; newPassword: string; repeatPassword: string }) => Promise<void>;
+  changeEmail: (newEmail: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -45,6 +46,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         changePassword: async (payload) => {
           if (!token) throw new Error("Сессия отсутствует");
           const r = await api.auth.changePassword(token, payload);
+          persist(r.token, r.user);
+        },
+        changeEmail: async (newEmail, password) => {
+          if (!token) throw new Error("Сессия отсутствует");
+          const r = await api.clientPortal.changeEmail(token, newEmail, password);
           persist(r.token, r.user);
         },
         logout: async () => { await api.auth.logout(token); localStorage.removeItem(TOKEN_KEY); setUser(null); setToken(null); },

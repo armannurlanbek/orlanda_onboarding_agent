@@ -15,6 +15,7 @@ const dict: Record<string, { en: string; he: string }> = {
   "nav.assistant": { en: "Assistant", he: "עוזר" },
   "nav.progress": { en: "Progress", he: "התקדמות" },
   "nav.feedback": { en: "Feedback", he: "משוב" },
+  "nav.settings": { en: "Settings", he: "הגדרות" },
   "common.logout": { en: "Log out", he: "התנתקות" },
   "common.loading": { en: "Loading…", he: "טוען…" },
   "common.error": { en: "Something went wrong. Please try again.", he: "משהו השתבש. נסו שוב." },
@@ -76,6 +77,18 @@ const dict: Record<string, { en: string; he: string }> = {
   "register.checking": { en: "Checking your invite…", he: "בודק את ההזמנה…" },
   "register.haveAccount": { en: "Already have an account?", he: "כבר יש לכם חשבון?" },
   "register.signIn": { en: "Sign in", he: "התחברות" },
+
+  "settings.title": { en: "Settings", he: "הגדרות" },
+  "settings.account": { en: "Account", he: "חשבון" },
+  "settings.email": { en: "E-mail", he: "אימייל" },
+  "settings.newEmail": { en: "New e-mail", he: "אימייל חדש" },
+  "settings.currentPassword": { en: "Current password", he: "סיסמה נוכחית" },
+  "settings.changeEmail": { en: "Change e-mail", he: "שינוי אימייל" },
+  "settings.password": { en: "Password", he: "סיסמה" },
+  "settings.newPassword": { en: "New password", he: "סיסמה חדשה" },
+  "settings.repeatPassword": { en: "Repeat new password", he: "אימות סיסמה חדשה" },
+  "settings.changePassword": { en: "Change password", he: "שינוי סיסמה" },
+  "settings.saved": { en: "Saved", he: "נשמר בהצלחה" },
 };
 
 type I18nState = {

@@ -8,13 +8,14 @@ import { ClientLogo } from "./ClientLogo";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
 import { useI18n } from "@/lib/i18n";
-import { Bot, ListTodo, LogOut, MessageSquareHeart, TrendingUp } from "lucide-react";
+import { Bot, ListTodo, LogOut, MessageSquareHeart, Settings, TrendingUp } from "lucide-react";
 
 const tabs = [
   { to: "/client/tasks", key: "nav.tasks", icon: ListTodo },
   { to: "/client/assistant", key: "nav.assistant", icon: Bot },
   { to: "/client/progress", key: "nav.progress", icon: TrendingUp },
   { to: "/client/feedback", key: "nav.feedback", icon: MessageSquareHeart },
+  { to: "/client/settings", key: "nav.settings", icon: Settings },
 ];
 
 export function ClientShell({ children }: { children: React.ReactNode }) {

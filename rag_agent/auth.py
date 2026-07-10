@@ -558,6 +558,67 @@ def change_password(
         db.close()
 
 
+def change_client_email(
+    username: str, new_email: str, password: str, dry_run: bool = False
+) -> tuple[bool, str]:
+    """Change a client's e-mail (their login identity/username).
+
+    Verifies the account exists, is an active client, and the password is correct;
+    validates the new address and its case-insensitive uniqueness. With
+    `dry_run=True` all checks run but nothing is mutated — used by the API endpoint
+    to validate *before* renaming the mirror row in orlanda-api, so a failure here
+    never requires rolling that back. Returns (True, "") for a successful dry run,
+    (True, new_token) on a real change (all sessions invalidated, a fresh one
+    issued), or (False, error_message).
+    """
+    if not DATABASE_URL:
+        return False, "Сервер не настроен: задайте DATABASE_URL (PostgreSQL)."
+    username = (username or "").strip()
+    new_email = (new_email or "").strip().lower()
+    password = (password or "").strip()
+
+    from rag_agent.db.models import User
+    from rag_agent.db.session import get_session_factory
+
+    db = get_session_factory()()
+    try:
+        user = db.scalar(select(User).where(func.lower(User.username) == username.lower()))
+        if not user or user.role != "client" or not user.is_active:
+            db.rollback()
+            return False, "Пользователь не найден"
+
+        ok, _ = _verify_and_maybe_upgrade_hash(user.password_hash, password)
+        if not ok:
+            db.rollback()
+            return False, "Неверный пароль"
+
+        if not _valid_any_email_username(new_email):
+            db.rollback()
+            return False, "Укажите действующий адрес электронной почты"
+
+        if new_email != username.lower():
+            exists = db.scalar(select(User.id).where(func.lower(User.username) == new_email))
+            if exists:
+                db.rollback()
+                return False, "Такой пользователь уже есть"
+
+        if dry_run:
+            db.rollback()
+            return True, ""
+
+        user.username = new_email
+        _invalidate_all_user_sessions(db, user.id)
+        db.commit()
+
+        new_token = _create_token(new_email, user_id=user.id)
+        return True, new_token
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def _create_token(username: str, *, user_id: uuid.UUID) -> str:
     """Issue bearer token; persist to auth_sessions."""
     raw = secrets.token_urlsafe(32)

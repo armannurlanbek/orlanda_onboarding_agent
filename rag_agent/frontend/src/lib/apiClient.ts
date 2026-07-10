@@ -6,6 +6,7 @@ import type {
   ClientProgressProject,
   ClientTasksTable,
   Conversation,
+  CustomerDirectoryEntry,
   DocMeta,
   FeedbackLink,
   MemorySettings,
@@ -260,12 +261,30 @@ export const api = {
       const data = await request<{ links: FeedbackLink[] }>("/client/portal/feedback", { token });
       return data.links || [];
     },
+    async changeEmail(token: string, newEmail: string, password: string): Promise<{ token: string; user: User }> {
+      const data = await request<{ token: string; username: string; role: "user" | "admin" | "client" }>(
+        "/client/portal/email",
+        {
+          method: "POST",
+          token,
+          body: { new_email: newEmail, password },
+        },
+      );
+      return {
+        token: data.token,
+        user: { username: data.username, role: data.role, displayName: data.username, mustChangePassword: false },
+      };
+    },
   },
 
   adminInvites: {
     async orlandaProjects(token: string): Promise<OrlandaProject[]> {
       const data = await request<{ projects: OrlandaProject[] }>("/admin/orlanda/projects", { token });
       return data.projects || [];
+    },
+    async customers(token: string): Promise<CustomerDirectoryEntry[]> {
+      const data = await request<{ customers: CustomerDirectoryEntry[] }>("/admin/orlanda/customers", { token });
+      return data.customers || [];
     },
     async list(token: string): Promise<ClientInvite[]> {
       const data = await request<{ invites: ClientInvite[] }>("/admin/invites", { token });
