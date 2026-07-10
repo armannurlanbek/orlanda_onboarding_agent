@@ -198,13 +198,18 @@ export default function ClientTasksPage() {
 
   const hasFilters = Object.keys(filters).length > 0;
   const blocks = data?.projects ?? [];
+  // Filter popovers must offer values only from the selected project's rows,
+  // so the column-value universe is scoped BEFORE search/filters are applied.
+  const scopedBlocks = useMemo(
+    () => (selectedId == null ? blocks : blocks.filter((b) => b.project_id === selectedId)),
+    [blocks, selectedId],
+  );
   const visible = useMemo(() => {
-    const byProject = selectedId == null ? blocks : blocks.filter((b) => b.project_id === selectedId);
-    if (!search && !hasFilters) return byProject;
-    return byProject
+    if (!search && !hasFilters) return scopedBlocks;
+    return scopedBlocks
       .map((b) => ({ ...b, rows: b.rows.filter((r) => rowMatches(r, search, filters)) }))
       .filter((b) => b.rows.length > 0 || (!search && !hasFilters));
-  }, [blocks, selectedId, search, filters, hasFilters]);
+  }, [scopedBlocks, search, filters, hasFilters]);
 
   const nothingFound = Boolean((search || hasFilters) && blocks.length && !visible.length);
 
@@ -217,7 +222,10 @@ export default function ClientTasksPage() {
             <select
               className="h-9 rounded-md border border-border bg-card px-3 text-sm"
               value={selectedId ?? ""}
-              onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : null)}
+              onChange={(e) => {
+                setSelectedId(e.target.value ? Number(e.target.value) : null);
+                setFilters({}); // stale filters from another project would hide everything
+              }}
             >
               <option value="">{t("common.allProjects")}</option>
               {blocks.map((b) => (
@@ -280,7 +288,7 @@ export default function ClientTasksPage() {
                 rows={block.rows}
                 headers={data!.headers}
                 colors={data!.status_colors}
-                blocks={blocks}
+                blocks={scopedBlocks}
                 filters={filters}
                 setFilters={setFilters}
               />
