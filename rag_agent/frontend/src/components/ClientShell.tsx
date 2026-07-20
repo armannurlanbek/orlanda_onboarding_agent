@@ -29,7 +29,7 @@ export function ClientShell({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <div className="client-theme min-h-screen flex flex-col md:flex-row bg-background">
+    <div className="client-theme h-screen overflow-hidden flex flex-col md:flex-row bg-background">
       {/* Mobile top bar (below md): logo + compact lang toggle + logout icon */}
       <header className="md:hidden flex items-center justify-between h-14 px-3 border-b border-border bg-card gap-2">
         <ClientLogo className="[&_img]:h-7 [&>div]:text-[8px]" />
@@ -113,7 +113,14 @@ export function ClientShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main className="flex-1 min-w-0 flex flex-col pb-16 md:pb-0">{children}</main>
+      {/* min-h-0 lets this flex item actually shrink to the space the h-screen
+          root gives it (flex items default to min-height:auto, which would
+          otherwise grow main — and every h-full/flex-1 chain inside a page,
+          like the Progress tab's iframe, to a resolvable percentage. Pages
+          that don't manage their own scroll region (Tasks/Settings/Feedback)
+          fall back to scrolling here; pages that do (Assistant/Progress) fill
+          this box exactly via h-full, so this overflow never engages. */}
+      <main className="flex-1 min-w-0 min-h-0 flex flex-col overflow-y-auto pb-16 md:pb-0">{children}</main>
 
       {/* Mobile bottom navigation (below md) */}
       <nav

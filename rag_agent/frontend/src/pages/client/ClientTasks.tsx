@@ -21,10 +21,69 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import type { ClientTaskBlock } from "@/lib/types";
-import { Filter } from "lucide-react";
+import { Download, Filter } from "lucide-react";
 
 type ColumnFilters = Record<string, Set<string>>;
 type ChipKey = "all" | "inProgress" | "waitingOnYou" | "dispatched7d";
+
+type LinkEntry = { label: string; url: string };
+
+// Monday file/mirror columns arrive as one of:
+//   "invoice-march.pdf (https://files.monday.com/...)"  — named attachment
+//   "https://www.dropbox.com/scl/fo/…"                   — bare link
+// possibly several, one per line, when a task has multiple attachments.
+// Returns null when the cell has no link at all, so callers fall back to
+// plain text (e.g. "Task", "Customer").
+function parseLinkEntries(raw: string): LinkEntry[] | null {
+  if (!raw || !/https?:\/\//.test(raw)) return null;
+  const entries: LinkEntry[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const named = trimmed.match(/^(.*)\s\((https?:\/\/[^\s)]+)\)$/);
+    if (named) {
+      entries.push({ label: named[1].trim() || "File", url: named[2] });
+      continue;
+    }
+    const bare = trimmed.match(/^(https?:\/\/\S+)$/);
+    if (bare) {
+      const last = decodeURIComponent(bare[1].split("/").filter(Boolean).pop() || "");
+      entries.push({ label: last.split("?")[0] || "Open", url: bare[1] });
+    }
+  }
+  return entries.length ? entries : null;
+}
+
+// One-line, truncated download link — the raw URL only ever lives in href/
+// title ("under the hood"), never as visible text that could overflow a
+// card. Extra attachments (rare) collapse into a "+N" badge rather than a
+// second line, so the row width is bounded regardless of file count.
+function LinkCell({ entries }: { entries: LinkEntry[] }) {
+  const [first, ...rest] = entries;
+  return (
+    <span className="inline-flex items-center gap-1.5 min-w-0 max-w-full overflow-hidden">
+      <a
+        href={first.url}
+        download
+        target="_blank"
+        rel="noreferrer"
+        title={first.url}
+        className="inline-flex items-center gap-1 min-w-0 overflow-hidden text-primary hover:underline"
+      >
+        <Download className="h-3.5 w-3.5 shrink-0" />
+        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{first.label}</span>
+      </a>
+      {rest.length > 0 && (
+        <span
+          className="shrink-0 text-xs text-muted-foreground"
+          title={rest.map((e) => e.label).join(", ")}
+        >
+          +{rest.length}
+        </span>
+      )}
+    </span>
+  );
+}
 
 function statusChip(value: string, colors: Record<string, string>) {
   const hex = colors[value];
@@ -449,8 +508,10 @@ function TaskTable({
                 const value = String(row[h] ?? "");
                 const isTitle = hi === 0;
                 const isEmpty = !isTitle && value.trim() === "";
+                const links = h === "Task Status" ? null : parseLinkEntries(value);
                 const cellClass = [
-                  "px-3 py-2 whitespace-nowrap max-w-[28rem] overflow-hidden text-ellipsis",
+                  "px-3 py-2 max-w-[28rem] overflow-hidden text-ellipsis",
+                  links ? "" : "whitespace-nowrap",
                   isTitle ? "cell-title" : "",
                   isEmpty ? "cell-empty" : "",
                 ]
@@ -458,7 +519,7 @@ function TaskTable({
                   .join(" ");
                 return (
                   <td key={h} data-label={h} className={cellClass}>
-                    {h === "Task Status" ? statusChip(value, colors) : value}
+                    {h === "Task Status" ? statusChip(value, colors) : links ? <LinkCell entries={links} /> : value}
                   </td>
                 );
               })}

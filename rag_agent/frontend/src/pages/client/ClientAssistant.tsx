@@ -256,7 +256,7 @@ export default function ClientAssistantPage() {
 
   return (
     <ClientShell>
-      <div className="flex h-screen min-h-0">
+      <div className="flex h-full min-h-0">
         {/* Desktop chat list */}
         <aside className="hidden md:flex w-56 shrink-0 border-e border-border flex-col bg-muted/20">
           <div className="p-2 border-b border-border">
