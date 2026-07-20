@@ -33,8 +33,8 @@ export default function ClientProgressPage() {
 
   return (
     <ClientShell>
-      <div className="flex flex-col h-screen">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 sm:px-6 h-14 shrink-0">
+      <div className="flex flex-col h-full min-h-0">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 sm:px-6 py-2 min-h-[3.5rem] shrink-0">
           <h1 className="text-base font-semibold">{t("progress.title")}</h1>
           <div className="flex items-center gap-2">
             {projects.length > 1 && (

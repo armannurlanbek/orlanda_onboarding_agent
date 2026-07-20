@@ -26,7 +26,7 @@ export default function ClientFeedbackPage() {
 
   return (
     <ClientShell>
-      <div className="p-6 max-w-xl space-y-4">
+      <div className="p-4 sm:p-6 max-w-xl space-y-4">
         <h1 className="text-xl font-semibold">{t("feedback.title")}</h1>
         <p className="text-sm text-muted-foreground">{t("feedback.text")}</p>
 

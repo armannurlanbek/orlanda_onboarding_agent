@@ -35,6 +35,32 @@ const dict: Record<string, { en: string; he: string }> = {
   "tasks.clearColumn": { en: "Clear", he: "נקה" },
   "tasks.filterSearch": { en: "Search values…", he: "חיפוש ערכים…" },
 
+  "dash.completion": { en: "Completion", he: "התקדמות" },
+  "dash.tasksDone": { en: "tasks done", he: "משימות הושלמו" },
+  "dash.byArea": { en: "by m²", he: "לפי מ״ר" },
+  "dash.cladding": { en: "Cladding", he: "חיפוי" },
+  "dash.dispatched": { en: "dispatched", he: "נשלח" },
+  "dash.dispatches": { en: "Dispatches · 6 weeks", he: "משלוחים · 6 שבועות" },
+  "dash.thisWeek": { en: "this week", he: "השבוע" },
+  "dash.waitingOnYou": { en: "Waiting on you", he: "ממתין לכם" },
+  "dash.updated": { en: "updated", he: "עודכן" },
+
+  "chips.all": { en: "All", he: "הכל" },
+  "chips.inProgress": { en: "In progress", he: "בתהליך" },
+  "chips.waitingOnYou": { en: "Waiting on you", he: "ממתין לכם" },
+  "chips.dispatched7d": { en: "Dispatched 7d", he: "נשלח 7 ימים" },
+
+  "suggest.whatsNew": { en: "What's new?", he: "מה חדש?" },
+  "suggest.status": { en: "Project status", he: "סטטוס הפרויקט" },
+  "suggest.drawings": { en: "Latest drawings", he: "שרטוטים אחרונים" },
+
+  "card.total": { en: "Cladding total", he: "סה״כ חיפוי" },
+  "card.dispatched": { en: "Dispatched", he: "נשלח" },
+  "card.nextDeadline": { en: "Next deadline", he: "מועד הבא" },
+  "card.lastDispatch": { en: "Last dispatch", he: "משלוח אחרון" },
+  "card.progressPage": { en: "Progress page", he: "דף התקדמות" },
+  "card.openTasks": { en: "Open tasks", he: "משימות פתוחות" },
+
   "assistant.title": { en: "Project assistant", he: "עוזר הפרויקט" },
   "assistant.placeholder": { en: "Ask about your projects…", he: "שאלו על הפרויקטים שלכם…" },
   "assistant.send": { en: "Send", he: "שלח" },

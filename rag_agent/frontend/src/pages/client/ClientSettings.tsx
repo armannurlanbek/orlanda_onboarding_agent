@@ -183,7 +183,7 @@ export default function ClientSettingsPage() {
 
   return (
     <ClientShell>
-      <div className="p-6 max-w-xl space-y-6">
+      <div className="p-4 sm:p-6 max-w-xl space-y-6">
         <h1 className="text-xl font-semibold">{t("settings.title")}</h1>
         <AccountCard />
         <PasswordCard />

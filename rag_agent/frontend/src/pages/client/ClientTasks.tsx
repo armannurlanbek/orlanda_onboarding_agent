@@ -4,6 +4,11 @@
  * filter popovers with a checkbox list of distinct values (multi-select per column,
  * AND across columns). Data refetches every 60s; Monday webhooks keep the server
  * cache fresh, so no manual refresh button is needed.
+ *
+ * On top of the table sits a mini-dashboard (completion ring, cladding m², a
+ * 6-week dispatch strip, and a "waiting on you" counter) plus quick-filter chips.
+ * Both are derived from the currently scoped rows (selected project, or all) and
+ * combine (AND) with the existing search/column filters.
  */
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -19,6 +24,7 @@ import type { ClientTaskBlock } from "@/lib/types";
 import { Filter } from "lucide-react";
 
 type ColumnFilters = Record<string, Set<string>>;
+type ChipKey = "all" | "inProgress" | "waitingOnYou" | "dispatched7d";
 
 function statusChip(value: string, colors: Record<string, string>) {
   const hex = colors[value];
@@ -43,6 +49,276 @@ function rowMatches(row: Record<string, string>, search: string, filters: Column
     if (!values.has(String(row[column] ?? ""))) return false;
   }
   return true;
+}
+
+function chipMatches(row: Record<string, string>, chip: ChipKey): boolean {
+  switch (chip) {
+    case "inProgress":
+      return row["Task Status"] === "In Progress";
+    case "waitingOnYou":
+      return row["Task Status"] === "Waiting on Client";
+    case "dispatched7d":
+      return isWithinLastDays(row["Date of Dispatch"], 7);
+    default:
+      return true;
+  }
+}
+
+function parseArea(v: string | undefined): number | null {
+  if (!v) return null;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseDateSafe(v: string | undefined): Date | null {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function isWithinLastDays(v: string | undefined, days: number): boolean {
+  const d = parseDateSafe(v);
+  if (!d) return false;
+  const diffMs = Date.now() - d.getTime();
+  return diffMs >= 0 && diffMs <= days * 86_400_000;
+}
+
+// ISO-8601 week key ("2026-W29") so the 6-week dispatch strip groups by
+// calendar week rather than by rolling 7-day windows.
+function isoWeekKey(d: Date): string {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = (date.getUTCDay() + 6) % 7; // Monday = 0
+  date.setUTCDate(date.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4));
+  const firstDayNum = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDayNum + 3);
+  const week = 1 + Math.round((date.getTime() - firstThursday.getTime()) / (7 * 86_400_000));
+  return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+function lastIsoWeekKeys(count: number): string[] {
+  const keys: string[] = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i * 7);
+    keys.push(isoWeekKey(d));
+  }
+  return keys;
+}
+
+function formatThousands(n: number): string {
+  return Math.round(n).toLocaleString("en-US").replace(/,/g, " ");
+}
+
+type DashboardStats = {
+  total: number;
+  doneCount: number;
+  completionPct: number;
+  areaPct: number;
+  totalArea: number;
+  dispatchedArea: number;
+  dispatchedShare: number;
+  weeklyDispatchCounts: number[];
+  thisWeekCount: number;
+  waitingOnClientCount: number;
+};
+
+function computeDashboardStats(rows: Record<string, string>[]): DashboardStats {
+  const weekKeys = lastIsoWeekKeys(6);
+  const weeklyDispatchCounts = new Array(6).fill(0) as number[];
+  let doneCount = 0;
+  let waitingOnClientCount = 0;
+  let totalArea = 0;
+  let doneArea = 0;
+  let dispatchedArea = 0;
+
+  for (const row of rows) {
+    const status = row["Task Status"] ?? "";
+    if (status === "Done") doneCount++;
+    if (status === "Waiting on Client") waitingOnClientCount++;
+
+    const area = parseArea(row["Cladding Area (m2)"]);
+    if (area != null) {
+      totalArea += area;
+      if (status === "Done") doneArea += area;
+    }
+
+    const dispatchDate = row["Date of Dispatch"];
+    if (dispatchDate) {
+      if (area != null) dispatchedArea += area;
+      const d = parseDateSafe(dispatchDate);
+      if (d) {
+        const idx = weekKeys.indexOf(isoWeekKey(d));
+        if (idx >= 0) weeklyDispatchCounts[idx] += 1;
+      }
+    }
+  }
+
+  const total = rows.length;
+  return {
+    total,
+    doneCount,
+    completionPct: total > 0 ? Math.round((doneCount / total) * 100) : 0,
+    areaPct: totalArea > 0 ? Math.round((doneArea / totalArea) * 100) : 0,
+    totalArea,
+    dispatchedArea,
+    dispatchedShare: totalArea > 0 ? dispatchedArea / totalArea : 0,
+    weeklyDispatchCounts,
+    thisWeekCount: weeklyDispatchCounts[weeklyDispatchCounts.length - 1] ?? 0,
+    waitingOnClientCount,
+  };
+}
+
+function DashboardStrip({
+  rows,
+  updatedAt,
+  lang,
+  onWaitingClick,
+}: {
+  rows: Record<string, string>[];
+  updatedAt: string | null;
+  lang: string;
+  onWaitingClick: () => void;
+}) {
+  const { t } = useI18n();
+  const stats = useMemo(() => computeDashboardStats(rows), [rows]);
+
+  const RADIUS = 26;
+  const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
+  const ringOffset = CIRCUMFERENCE * (1 - stats.completionPct / 100);
+  const maxWeekly = Math.max(1, ...stats.weeklyDispatchCounts);
+
+  return (
+    <div className="space-y-1.5">
+      {updatedAt && (
+        <p className="text-xs text-muted-foreground text-end">
+          {t("dash.updated")}: {new Date(updatedAt).toLocaleTimeString(lang === "he" ? "he-IL" : "en-GB")}
+        </p>
+      )}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {/* a. Completion */}
+        <div className="rounded-lg border border-border bg-card p-3 flex items-center gap-3">
+          <svg width="56" height="56" viewBox="0 0 64 64" className="shrink-0">
+            <circle cx="32" cy="32" r={RADIUS} fill="none" stroke="hsl(var(--muted))" strokeWidth="6" />
+            <circle
+              cx="32"
+              cy="32"
+              r={RADIUS}
+              fill="none"
+              stroke="hsl(var(--primary))"
+              strokeWidth="6"
+              strokeLinecap="round"
+              strokeDasharray={CIRCUMFERENCE}
+              strokeDashoffset={ringOffset}
+              transform="rotate(-90 32 32)"
+            />
+            <text x="32" y="37" textAnchor="middle" fontSize="15" fontWeight="600" className="fill-foreground">
+              {stats.completionPct}%
+            </text>
+          </svg>
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-muted-foreground truncate">{t("dash.completion")}</p>
+            <p className="text-sm font-semibold truncate">
+              {stats.doneCount} / {stats.total} {t("dash.tasksDone")}
+            </p>
+            <p className="text-xs text-muted-foreground truncate">
+              {stats.areaPct}% {t("dash.byArea")}
+            </p>
+          </div>
+        </div>
+
+        {/* b. Cladding */}
+        <div className="rounded-lg border border-border bg-card p-3 flex flex-col justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-muted-foreground truncate">{t("dash.cladding")}</p>
+            <p className="text-sm font-semibold truncate">{formatThousands(stats.totalArea)} m²</p>
+            <p className="text-xs text-muted-foreground truncate">
+              {formatThousands(stats.dispatchedArea)} m² {t("dash.dispatched")}
+            </p>
+          </div>
+          <div className="h-1.5 w-full rounded-full overflow-hidden bg-muted">
+            <div
+              className="h-full rounded-full"
+              style={{ width: `${Math.min(100, stats.dispatchedShare * 100)}%`, background: "#007EB5" }}
+            />
+          </div>
+        </div>
+
+        {/* c. Dispatches, 6 weeks */}
+        <div className="rounded-lg border border-border bg-card p-3">
+          <p className="text-xs font-medium text-muted-foreground truncate mb-2">{t("dash.dispatches")}</p>
+          <div className="flex items-end gap-1 h-8">
+            {stats.weeklyDispatchCounts.map((count, i) => {
+              const isCurrentWeek = i === stats.weeklyDispatchCounts.length - 1;
+              const heightPx = Math.max(3, Math.round((count / maxWeekly) * 32));
+              return (
+                <div
+                  key={i}
+                  className="w-2 rounded-sm"
+                  style={{ height: `${heightPx}px`, backgroundColor: "#007EB5", opacity: isCurrentWeek ? 1 : 0.3 }}
+                  title={String(count)}
+                />
+              );
+            })}
+          </div>
+          <p className="text-xs text-muted-foreground mt-1.5">
+            {stats.thisWeekCount} {t("dash.thisWeek")}
+          </p>
+        </div>
+
+        {/* d. Waiting on you */}
+        <button
+          type="button"
+          onClick={onWaitingClick}
+          className="rounded-lg border border-border bg-card p-3 text-start hover:border-primary/50 transition-colors"
+        >
+          <p className="text-2xl font-bold" style={{ color: "#175A63" }}>
+            {stats.waitingOnClientCount}
+          </p>
+          <p className="text-xs font-medium text-muted-foreground">{t("dash.waitingOnYou")}</p>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function QuickChips({
+  active,
+  counts,
+  onChange,
+}: {
+  active: ChipKey;
+  counts: Record<ChipKey, number>;
+  onChange: (chip: ChipKey) => void;
+}) {
+  const { t } = useI18n();
+  const items: { key: ChipKey; label: string }[] = [
+    { key: "all", label: t("chips.all") },
+    { key: "inProgress", label: t("chips.inProgress") },
+    { key: "waitingOnYou", label: t("chips.waitingOnYou") },
+    { key: "dispatched7d", label: t("chips.dispatched7d") },
+  ];
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {items.map((item) => {
+        const isActive = active === item.key;
+        return (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => onChange(item.key)}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+              isActive
+                ? "bg-primary text-primary-foreground"
+                : "border border-border text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {item.label} <span className={isActive ? "opacity-80" : "opacity-70"}>({counts[item.key]})</span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function ColumnFilterPopover({
@@ -153,7 +429,7 @@ function TaskTable({
   if (!rows.length) return <p className="text-sm text-muted-foreground py-4">{t("tasks.empty")}</p>;
   return (
     <div className="overflow-x-auto rounded-lg border border-border">
-      <table className="min-w-full text-sm" dir="ltr">
+      <table className="min-w-full text-sm client-task-table" dir="ltr">
         <thead className="bg-muted/60">
           <tr>
             {headers.map((h) => (
@@ -169,11 +445,23 @@ function TaskTable({
         <tbody>
           {rows.map((row, i) => (
             <tr key={i} className="border-t border-border hover:bg-muted/30">
-              {headers.map((h) => (
-                <td key={h} className="px-3 py-2 whitespace-nowrap max-w-[28rem] overflow-hidden text-ellipsis">
-                  {h === "Task Status" ? statusChip(String(row[h] ?? ""), colors) : String(row[h] ?? "")}
-                </td>
-              ))}
+              {headers.map((h, hi) => {
+                const value = String(row[h] ?? "");
+                const isTitle = hi === 0;
+                const isEmpty = !isTitle && value.trim() === "";
+                const cellClass = [
+                  "px-3 py-2 whitespace-nowrap max-w-[28rem] overflow-hidden text-ellipsis",
+                  isTitle ? "cell-title" : "",
+                  isEmpty ? "cell-empty" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ");
+                return (
+                  <td key={h} data-label={h} className={cellClass}>
+                    {h === "Task Status" ? statusChip(value, colors) : value}
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
@@ -188,6 +476,7 @@ export default function ClientTasksPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [filters, setFilters] = useState<ColumnFilters>({});
+  const [activeChip, setActiveChip] = useState<ChipKey>("all");
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["client-tasks"],
@@ -197,6 +486,7 @@ export default function ClientTasksPage() {
   });
 
   const hasFilters = Object.keys(filters).length > 0;
+  const hasChip = activeChip !== "all";
   const blocks = data?.projects ?? [];
   // Filter popovers must offer values only from the selected project's rows,
   // so the column-value universe is scoped BEFORE search/filters are applied.
@@ -204,14 +494,34 @@ export default function ClientTasksPage() {
     () => (selectedId == null ? blocks : blocks.filter((b) => b.project_id === selectedId)),
     [blocks, selectedId],
   );
-  const visible = useMemo(() => {
-    if (!search && !hasFilters) return scopedBlocks;
-    return scopedBlocks
-      .map((b) => ({ ...b, rows: b.rows.filter((r) => rowMatches(r, search, filters)) }))
-      .filter((b) => b.rows.length > 0 || (!search && !hasFilters));
-  }, [scopedBlocks, search, filters, hasFilters]);
+  // Dashboard + chip counts are derived from the scoped rows only — they must
+  // NOT react to search/column filters or the active chip itself.
+  const scopedRows = useMemo(() => scopedBlocks.flatMap((b) => b.rows), [scopedBlocks]);
+  const latestFetchedAt = useMemo(() => {
+    let latest: string | null = null;
+    for (const b of scopedBlocks) {
+      if (b.fetched_at && (!latest || b.fetched_at > latest)) latest = b.fetched_at;
+    }
+    return latest;
+  }, [scopedBlocks]);
+  const chipCounts = useMemo<Record<ChipKey, number>>(
+    () => ({
+      all: scopedRows.length,
+      inProgress: scopedRows.filter((r) => r["Task Status"] === "In Progress").length,
+      waitingOnYou: scopedRows.filter((r) => r["Task Status"] === "Waiting on Client").length,
+      dispatched7d: scopedRows.filter((r) => isWithinLastDays(r["Date of Dispatch"], 7)).length,
+    }),
+    [scopedRows],
+  );
 
-  const nothingFound = Boolean((search || hasFilters) && blocks.length && !visible.length);
+  const visible = useMemo(() => {
+    if (!search && !hasFilters && !hasChip) return scopedBlocks;
+    return scopedBlocks
+      .map((b) => ({ ...b, rows: b.rows.filter((r) => rowMatches(r, search, filters) && chipMatches(r, activeChip)) }))
+      .filter((b) => b.rows.length > 0 || (!search && !hasFilters && !hasChip));
+  }, [scopedBlocks, search, filters, hasFilters, activeChip, hasChip]);
+
+  const nothingFound = Boolean((search || hasFilters || hasChip) && blocks.length && !visible.length);
 
   return (
     <ClientShell>
@@ -238,6 +548,19 @@ export default function ClientTasksPage() {
         </div>
 
         {data && blocks.length > 0 && (
+          <DashboardStrip
+            rows={scopedRows}
+            updatedAt={latestFetchedAt}
+            lang={lang}
+            onWaitingClick={() => setActiveChip("waitingOnYou")}
+          />
+        )}
+
+        {data && blocks.length > 0 && (
+          <QuickChips active={activeChip} counts={chipCounts} onChange={setActiveChip} />
+        )}
+
+        {data && blocks.length > 0 && (
           <div className="flex flex-wrap items-center gap-2">
             <Input
               value={search}
@@ -245,12 +568,13 @@ export default function ClientTasksPage() {
               placeholder={t("tasks.search")}
               className="w-64 max-w-full"
             />
-            {(hasFilters || search) && (
+            {(hasFilters || search || hasChip) && (
               <button
                 className="text-xs text-primary hover:underline"
                 onClick={() => {
                   setFilters({});
                   setSearch("");
+                  setActiveChip("all");
                 }}
               >
                 {t("tasks.clearFilters")}
