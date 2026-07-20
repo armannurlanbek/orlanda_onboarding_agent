@@ -218,7 +218,7 @@ export default function ClientAssistantPage() {
         const projects = await qc.fetchQuery({
           queryKey: ["client-progress"],
           queryFn: () => api.clientPortal.progress(token),
-          staleTime: 60_000,
+          staleTime: 5 * 60_000,
         });
         progressUrl = projects.find((p) => p.name === firstBlock.project_name)?.url ?? undefined;
       } catch {

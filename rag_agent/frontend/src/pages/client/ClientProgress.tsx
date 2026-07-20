@@ -21,6 +21,8 @@ export default function ClientProgressPage() {
     queryKey: ["client-progress"],
     queryFn: () => api.clientPortal.progress(token!),
     enabled: Boolean(token),
+    staleTime: 5 * 60_000, // access/tokens rarely change; avoid re-running the
+    // orlanda-api + progress-tracking lookup chain on every tab visit
   });
 
   const current = useMemo(() => {

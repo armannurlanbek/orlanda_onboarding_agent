@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -129,6 +130,15 @@ async def orlanda_delete_conversation(user: str, conversation_id: str) -> None:
 
 # ── Progress-tracking links ──────────────────────────────────────────────────
 
+# progress_links() chains orlanda-api (access) + progress-tracking (token map,
+# occasionally a token-creation POST) — up to 3 sequential round trips before
+# the iframe src is even known. Access/tokens change rarely, so a short
+# in-process cache turns repeat tab visits into an instant hit instead of
+# re-running that chain every time.
+_PROGRESS_LINKS_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_PROGRESS_LINKS_CACHE_TTL = 300  # seconds
+
+
 async def _progress_token_map(client: httpx.AsyncClient) -> dict[str, str]:
     try:
         resp = await client.get(
@@ -150,7 +160,15 @@ async def progress_links(user: str) -> list[dict]:
     progress-tracking token map. Old projects may predate the auto-token
     webhook, so missing tokens are created on the fly via progress-tracking's
     /webhook/refresh (idempotent: it creates the token only when absent).
+    Result is cached in-process per user for a few minutes (see
+    _PROGRESS_LINKS_CACHE_TTL) — call invalidate_progress_links_cache(user)
+    after an admin access change so the client sees it immediately.
     """
+    cache_key = user.strip().lower()
+    cached = _PROGRESS_LINKS_CACHE.get(cache_key)
+    if cached and (time.monotonic() - cached[0]) < _PROGRESS_LINKS_CACHE_TTL:
+        return cached[1]
+
     projects = await orlanda_get_access(user)
     token_map: dict[str, str] = {}
     if PROGRESS_BASE_URL and PROGRESS_API_SECRET and projects:
@@ -182,13 +200,42 @@ async def progress_links(user: str) -> list[dict]:
                 "url": f"{PROGRESS_BASE_URL}/p/{token}" if token else None,
             }
         )
+    _PROGRESS_LINKS_CACHE[cache_key] = (time.monotonic(), result)
     return result
+
+
+def invalidate_progress_links_cache(user: str) -> None:
+    _PROGRESS_LINKS_CACHE.pop(user.strip().lower(), None)
 
 
 async def orlanda_feedback_links(user: str) -> list[dict]:
     """Per-client feedback-form links (EN/HE) from the Monday clients board."""
     data = await _orlanda_request("GET", "/client/feedback-links", params={"user": user})
     return data.get("links", [])
+
+
+async def orlanda_file_url(user: str, asset_id: str) -> str | None:
+    """Mint a fresh presigned download URL for a file attachment (asset ids
+    in the tasks table go stale within ~1h — never cache the result).
+
+    Returns None (not an error) when orlanda-api says the file doesn't exist
+    or isn't the user's — that's a normal "not found", not a service outage.
+    """
+    url = f"{ORLANDA_API_BASE_URL}/client/file-url"
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+            resp = await client.get(
+                url, headers=_orlanda_headers(), params={"user": user, "asset_id": asset_id}
+            )
+    except httpx.HTTPError as exc:
+        logger.error("orlanda-api GET /client/file-url failed: %s", exc)
+        raise OrlandaApiError("Сервис данных временно недоступен") from exc
+    if resp.status_code == 404:
+        return None
+    if resp.status_code != 200:
+        logger.error("orlanda-api GET /client/file-url -> %s: %s", resp.status_code, resp.text[:500])
+        raise OrlandaApiError("Сервис данных временно недоступен")
+    return resp.json().get("url") or None
 
 
 def list_client_accounts() -> list[dict]:

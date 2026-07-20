@@ -261,6 +261,10 @@ export const api = {
       const data = await request<{ links: FeedbackLink[] }>("/client/portal/feedback", { token });
       return data.links || [];
     },
+    async fileUrl(token: string, assetId: string): Promise<string> {
+      const data = await request<{ url: string }>(`/client/portal/files/${encodeURIComponent(assetId)}`, { token });
+      return data.url;
+    },
     async changeEmail(token: string, newEmail: string, password: string): Promise<{ token: string; user: User }> {
       const data = await request<{ token: string; username: string; role: "user" | "admin" | "client" }>(
         "/client/portal/email",

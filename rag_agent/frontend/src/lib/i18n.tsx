@@ -34,6 +34,7 @@ const dict: Record<string, { en: string; he: string }> = {
   "tasks.selectAll": { en: "Select all", he: "בחר הכל" },
   "tasks.clearColumn": { en: "Clear", he: "נקה" },
   "tasks.filterSearch": { en: "Search values…", he: "חיפוש ערכים…" },
+  "tasks.files": { en: "files", he: "קבצים" },
 
   "dash.completion": { en: "Completion", he: "התקדמות" },
   "dash.tasksDone": { en: "tasks done", he: "משימות הושלמו" },

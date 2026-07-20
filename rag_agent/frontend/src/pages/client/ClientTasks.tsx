@@ -21,28 +21,36 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import type { ClientTaskBlock } from "@/lib/types";
-import { Download, Filter } from "lucide-react";
+import { AlertTriangle, Download, Filter, Loader2 } from "lucide-react";
 
 type ColumnFilters = Record<string, Set<string>>;
 type ChipKey = "all" | "inProgress" | "waitingOnYou" | "dispatched7d";
 
-type LinkEntry = { label: string; url: string };
+// Monday-hosted attachments carry a presigned S3 url that expires in ~1h, so
+// the snapshot (cached for hours) never bakes one in — it stores the asset
+// id instead ("invoice.pdf (monday-asset:555)") and the browser resolves a
+// fresh url from the server at click time. External links (Dropbox etc.,
+// "drawing.pdf (https://dropbox.com/...)") don't expire and open directly.
+type LinkEntry = { label: string } & ({ url: string } | { assetId: string });
 
-// Monday file/mirror columns arrive as one of:
-//   "invoice-march.pdf (https://files.monday.com/...)"  — named attachment
-//   "https://www.dropbox.com/scl/fo/…"                   — bare link
-// possibly several, one per line, when a task has multiple attachments.
-// Returns null when the cell has no link at all, so callers fall back to
-// plain text (e.g. "Task", "Customer").
+// Possibly several entries, one per line, when a task has multiple
+// attachments. Returns null when the cell has no link at all, so callers
+// fall back to plain text (e.g. "Task", "Customer").
 function parseLinkEntries(raw: string): LinkEntry[] | null {
-  if (!raw || !/https?:\/\//.test(raw)) return null;
+  if (!raw || !/(https?:\/\/|monday-asset:)/.test(raw)) return null;
   const entries: LinkEntry[] = [];
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const named = trimmed.match(/^(.*)\s\((https?:\/\/[^\s)]+)\)$/);
+    const named = trimmed.match(/^(.*)\s\((https?:\/\/[^\s)]+|monday-asset:[^\s)]+)\)$/);
     if (named) {
-      entries.push({ label: named[1].trim() || "File", url: named[2] });
+      const label = named[1].trim() || "File";
+      const target = named[2];
+      entries.push(
+        target.startsWith("monday-asset:")
+          ? { label, assetId: target.slice("monday-asset:".length) }
+          : { label, url: target },
+      );
       continue;
     }
     const bare = trimmed.match(/^(https?:\/\/\S+)$/);
@@ -54,34 +62,86 @@ function parseLinkEntries(raw: string): LinkEntry[] | null {
   return entries.length ? entries : null;
 }
 
-// One-line, truncated download link — the raw URL only ever lives in href/
-// title ("under the hood"), never as visible text that could overflow a
-// card. Extra attachments (rare) collapse into a "+N" badge rather than a
-// second line, so the row width is bounded regardless of file count.
-function LinkCell({ entries }: { entries: LinkEntry[] }) {
-  const [first, ...rest] = entries;
-  return (
-    <span className="inline-flex items-center gap-1.5 min-w-0 max-w-full overflow-hidden">
-      <a
-        href={first.url}
-        download
-        target="_blank"
-        rel="noreferrer"
-        title={first.url}
-        className="inline-flex items-center gap-1 min-w-0 overflow-hidden text-primary hover:underline"
-      >
-        <Download className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{first.label}</span>
+// One clickable row: external links open directly; Monday-hosted assets
+// resolve a fresh download url on click (never reuse a stored one — it may
+// have expired) and open it once ready.
+function FileLinkRow({ entry, dense }: { entry: LinkEntry; dense?: boolean }) {
+  const { token } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const rowClass = dense
+    ? "flex items-center gap-2 text-sm px-1 py-1.5 rounded hover:bg-muted w-full text-start"
+    : "inline-flex items-center gap-1 min-w-0 overflow-hidden text-primary hover:underline";
+  const labelClass = dense ? "flex-1 truncate" : "min-w-0 overflow-hidden text-ellipsis whitespace-nowrap";
+
+  if ("url" in entry) {
+    return (
+      <a href={entry.url} download target="_blank" rel="noreferrer" title={entry.url} className={rowClass}>
+        {busy ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" /> : <Download className="h-3.5 w-3.5 shrink-0" />}
+        <span className={labelClass}>{entry.label}</span>
       </a>
-      {rest.length > 0 && (
-        <span
-          className="shrink-0 text-xs text-muted-foreground"
-          title={rest.map((e) => e.label).join(", ")}
-        >
-          +{rest.length}
-        </span>
+    );
+  }
+
+  const openFresh = async () => {
+    if (busy || !token) return;
+    setBusy(true);
+    setFailed(false);
+    try {
+      const url = await api.clientPortal.fileUrl(token, entry.assetId);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch {
+      setFailed(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button type="button" onClick={openFresh} disabled={busy} className={`${rowClass} disabled:opacity-60`}>
+      {busy ? (
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
+      ) : failed ? (
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+      ) : (
+        <Download className="h-3.5 w-3.5 shrink-0" />
       )}
-    </span>
+      <span className={labelClass}>{entry.label}</span>
+    </button>
+  );
+}
+
+// One-line, truncated by design — the raw URL/asset id never sits in visible
+// text ("under the hood" per spec). A single attachment renders as a direct
+// clickable row; multiple attachments collapse into a "N files" trigger that
+// opens a popover listing every one, each independently clickable.
+function LinkCell({ entries }: { entries: LinkEntry[] }) {
+  const { t } = useI18n();
+  if (entries.length === 1) {
+    return (
+      <span className="inline-flex min-w-0 max-w-full overflow-hidden">
+        <FileLinkRow entry={entries[0]} />
+      </span>
+    );
+  }
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 text-primary hover:underline shrink-0"
+        >
+          <Download className="h-3.5 w-3.5 shrink-0" />
+          {entries.length} {t("tasks.files")}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-64 p-1.5 text-foreground">
+        {entries.map((entry, i) => (
+          <FileLinkRow key={i} entry={entry} dense />
+        ))}
+      </PopoverContent>
+    </Popover>
   );
 }
 

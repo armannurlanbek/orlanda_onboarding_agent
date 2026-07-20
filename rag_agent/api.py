@@ -1691,6 +1691,24 @@ async def client_portal_feedback(authorization: str | None = Header(default=None
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+@app.get("/client/portal/files/{asset_id}")
+async def client_portal_file_url(
+    asset_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """Fresh, short-lived download URL for a task attachment — resolved on
+    click rather than cached, since Monday's presigned URLs expire (~1h)."""
+    username = _require_client(authorization)
+    _client_portal_or_503()
+    try:
+        url = await client_portal.orlanda_file_url(username, asset_id)
+    except client_portal.OrlandaApiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    if not url:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    return {"url": url}
+
+
 @app.post("/client/portal/email", response_model=AuthResponse)
 async def client_portal_email_change(
     body: ClientEmailChangeRequest,
@@ -1794,6 +1812,7 @@ async def admin_client_access_put(
         project_ids = await client_portal.orlanda_sync_access(client_username, body.project_ids)
     except client_portal.OrlandaApiError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+    client_portal.invalidate_progress_links_cache(client_username)
     write_audit(
         "client_access_update",
         admin_username,
