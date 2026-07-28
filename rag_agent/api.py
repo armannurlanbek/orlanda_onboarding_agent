@@ -11,7 +11,7 @@ from pathlib import Path
 import asyncio
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, HTTPException, Header, Request, UploadFile, File, Form, Query
+from fastapi import FastAPI, HTTPException, Header, Request, Response, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from langchain.chat_models import init_chat_model
@@ -72,7 +72,10 @@ from rag_agent.config import (
     RAG_RATE_LIMIT_CLIENT_REGISTER,
     RAG_RATE_LIMIT_LOGIN,
     RAG_RATE_LIMIT_REGISTER,
+    RAG_SESSION_EXPIRY_DAYS,
     RAG_USERNAME_MAX_LEN,
+    SSO_COOKIE_DOMAIN,
+    SSO_COOKIE_NAME,
     client_portal_enabled,
     memory_enabled,
     monday_enabled,
@@ -1180,9 +1183,33 @@ def _ensure_assistant_turn_persisted(runtime_agent, config: dict, content: str) 
         return
 
 
+def _set_sso_cookie(response: Response, token: str) -> None:
+    """Drop a cross-subdomain SSO cookie so sibling apps on other subdomains
+    (e.g. client pages) can reuse this session without a second login.
+    No-op unless SSO_COOKIE_DOMAIN is configured."""
+    if not SSO_COOKIE_DOMAIN or not token:
+        return
+    response.set_cookie(
+        key=SSO_COOKIE_NAME,
+        value=token,
+        max_age=RAG_SESSION_EXPIRY_DAYS * 86400,
+        domain=SSO_COOKIE_DOMAIN,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+
+
+def _clear_sso_cookie(response: Response) -> None:
+    if not SSO_COOKIE_DOMAIN:
+        return
+    response.delete_cookie(key=SSO_COOKIE_NAME, domain=SSO_COOKIE_DOMAIN, path="/")
+
+
 @app.post("/auth/register", response_model=AuthResponse)
 @limiter.limit(RAG_RATE_LIMIT_REGISTER)
-def register(request: Request, body: RegisterRequest):
+def register(request: Request, response: Response, body: RegisterRequest):
     """Create account; returns token and username. thread_id = username so history is per user."""
     ok, result = auth_register(body.username.strip(), body.password)
     if not ok:
@@ -1190,12 +1217,13 @@ def register(request: Request, body: RegisterRequest):
     username = resolve_token(result) or body.username.strip()
     flags = get_user_auth_flags(username)
     role = get_user_role(username)
+    _set_sso_cookie(response, result)
     return AuthResponse(token=result, username=username, role=role, must_change_password=bool(flags.get("must_change_password")))
 
 
 @app.post("/auth/login", response_model=AuthResponse)
 @limiter.limit(RAG_RATE_LIMIT_LOGIN)
-def login(request: Request, body: LoginRequest):
+def login(request: Request, response: Response, body: LoginRequest):
     """Log in; returns token and username."""
     ok, result = auth_login(body.username.strip(), body.password)
     if not ok:
@@ -1203,19 +1231,22 @@ def login(request: Request, body: LoginRequest):
     username = resolve_token(result) or body.username.strip()
     flags = get_user_auth_flags(username)
     role = get_user_role(username)
+    _set_sso_cookie(response, result)
     return AuthResponse(token=result, username=username, role=role, must_change_password=bool(flags.get("must_change_password")))
 
 
 @app.post("/auth/logout")
-def logout(authorization: str | None = Header(default=None)):
+def logout(response: Response, authorization: str | None = Header(default=None)):
     """Invalidate the current bearer token (server-side session row when using PostgreSQL)."""
     if authorization and authorization.startswith("Bearer "):
         invalidate_token(authorization[7:].strip())
+    _clear_sso_cookie(response)
     return {"ok": True}
 
 
 @app.post("/auth/password/change", response_model=AuthResponse)
 def password_change(
+    response: Response,
     body: PasswordChangeRequest,
     authorization: str | None = Header(default=None),
 ):
@@ -1238,6 +1269,7 @@ def password_change(
     canonical_username = resolve_token(new_token) or username
     role = get_user_role(canonical_username)
     flags = get_user_auth_flags(canonical_username)
+    _set_sso_cookie(response, new_token)
     return AuthResponse(
         token=new_token,
         username=canonical_username,

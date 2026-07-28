@@ -106,6 +106,12 @@ RAG_MIN_PASSWORD_LENGTH = max(8, int(os.environ.get("RAG_MIN_PASSWORD_LENGTH", "
 RAG_MAX_PASSWORD_LENGTH = min(256, int(os.environ.get("RAG_MAX_PASSWORD_LENGTH", "128")))
 # Bearer sessions: validity when using PostgreSQL-backed auth_sessions (and in-memory TTL without DB).
 RAG_SESSION_EXPIRY_DAYS = max(1, min(365, int(os.environ.get("RAG_SESSION_EXPIRY_DAYS", "7"))))
+# Cross-subdomain SSO cookie: when set to a parent domain (e.g. ".n8norlanda.com"), successful
+# logins also drop an HttpOnly bearer cookie scoped to that domain, so sibling apps on other
+# subdomains (client pages, etc.) can reuse the session without a second login. Empty = disabled
+# (default; local dev / setups without a shared parent domain are unaffected).
+SSO_COOKIE_DOMAIN = os.environ.get("SSO_COOKIE_DOMAIN", "").strip()
+SSO_COOKIE_NAME = os.environ.get("SSO_COOKIE_NAME", "orlanda_sso").strip() or "orlanda_sso"
 # Legacy import only (`python -m rag_agent.import_json_users`). Not used by runtime auth.
 USERS_FILE = RAG_AGENT_DIR / "data" / "users.json"
 # Comma-separated usernames that have admin access (can open admin panel, manage docs, see logs)
