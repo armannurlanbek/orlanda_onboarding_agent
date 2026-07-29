@@ -1279,10 +1279,18 @@ def password_change(
 
 
 @app.get("/auth/me")
-def me(authorization: str | None = Header(default=None)):
-    """Return current user and role if token valid."""
+def me(response: Response, authorization: str | None = Header(default=None)):
+    """Return current user and role if token valid.
+
+    Also refresh the cross-subdomain SSO cookie: the SPA validates a saved
+    session here on every load (auto-login) without hitting /auth/login, so
+    without this the cookie is only ever set at an explicit login and silently
+    lapses. Re-setting it on each authenticated /auth/me keeps sibling apps
+    (client pages) seamlessly signed in as long as the Platform is used."""
     username = _get_username(authorization, enforce_password_rotation=False)
     flags = get_user_auth_flags(username)
+    if authorization and authorization.startswith("Bearer "):
+        _set_sso_cookie(response, authorization[7:].strip())
     return {
         "username": username,
         "role": get_user_role(username),
