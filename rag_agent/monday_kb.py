@@ -205,10 +205,10 @@ _Q_FOLDERS_BY_ID = (
 )
 _Q_DOCS_IN_WS = (
     "query ($ws: [ID], $page: Int!) { docs(workspace_ids: $ws, limit: 100, page: $page) "
-    "{ id object_id name url } }"
+    "{ id object_id name url updated_at } }"
 )
 _Q_DOCS_BY_OBJECT = (
-    "query ($ids: [ID!]) { docs(object_ids: $ids, limit: 100) { id object_id name url } }"
+    "query ($ids: [ID!]) { docs(object_ids: $ids, limit: 100) { id object_id name url updated_at } }"
 )
 _Q_DOC_MARKDOWN = (
     "query ($id: ID!) { export_markdown_from_doc(docId: $id) { success markdown error } }"
@@ -488,24 +488,60 @@ def block_text(block: dict) -> str:
     return _BLOCK_PREFIX.get(kind, "") + text
 
 
+def _is_throttled_text(text: str) -> bool:
+    t = (text or "").lower()
+    return "429" in t or "too many" in t or "rate limit" in t
+
+
+# Pauses between markdown-export retries when monday throttles it (seconds).
+_MARKDOWN_RETRY_PAUSES = (5.0, 20.0)
+
+
 class _DocReader:
+    """Reads a monday Doc as text: markdown export (best: keeps tables), else the blocks API.
+
+    The markdown export has its own rate limit and reports it in-band (``success: false``,
+    ``error: "...status=429 Too Many Requests"``). Silently falling back to blocks then would
+    give the same doc a different text on every other sync (= needless re-embedding), so a
+    throttled export is surfaced via ``throttled`` and the caller keeps the indexed version.
+    """
+
     def __init__(self, client: MondayClient) -> None:
         self._client = client
         self._markdown_supported = True
+        self.throttled = False  # sticky for the run: stop hammering the export once limited
 
-    def text(self, doc_id: str) -> str:
-        if self._markdown_supported:
+    def markdown(self, doc_id: str) -> str | None:
+        """Markdown text ("" = the doc is empty), or None when the export is unavailable."""
+        if not self._markdown_supported or self.throttled:
+            return None
+        for pause in (0.0, *_MARKDOWN_RETRY_PAUSES):
+            if pause:
+                time.sleep(pause)
             try:
                 data = self._client.query(_Q_DOC_MARKDOWN, {"id": doc_id})
-                res = data.get("export_markdown_from_doc") or {}
-                if res.get("success") and (res.get("markdown") or "").strip():
-                    return str(res["markdown"]).strip()
             except MondayKbError as exc:
-                # Older API versions lack the field: fall back to blocks for the rest of the run.
+                # Older API versions lack the field: use blocks for the rest of the run.
                 if "export_markdown_from_doc" in str(exc) or "Cannot query field" in str(exc):
                     self._markdown_supported = False
-                else:
-                    raise
+                    return None
+                if _is_throttled_text(str(exc)):
+                    continue
+                raise
+            res = data.get("export_markdown_from_doc") or {}
+            if res.get("success"):
+                return str(res.get("markdown") or "").strip()
+            if not _is_throttled_text(str(res.get("error") or "")):
+                return None  # some other export failure: blocks will do
+        self.throttled = True
+        log.info("monday KB: markdown export is rate-limited; keeping indexed docs until next sync")
+        return None
+
+    def text(self, doc_id: str) -> str:
+        md = self.markdown(doc_id)
+        return md if md else self.blocks(doc_id)
+
+    def blocks(self, doc_id: str) -> str:
         lines: list[str] = []
         for page in range(1, _MAX_PAGES + 1):
             data = self._client.query(_Q_DOC_BLOCKS, {"ids": [doc_id], "page": page})
@@ -809,7 +845,8 @@ def _set_status(**kw) -> None:
         _status.update(kw)
 
 
-def _existing_monday_records() -> dict[str, str]:
+def _existing_monday_records() -> dict[str, tuple[str, str]]:
+    """doc_id -> (source_name, source_ref) of every monday record in the index."""
     from sqlalchemy import select
 
     from rag_agent.db.models import DocumentIndexRecord
@@ -818,11 +855,20 @@ def _existing_monday_records() -> dict[str, str]:
 
     with get_session_factory()() as db:
         rows = db.execute(
-            select(DocumentIndexRecord.doc_id, DocumentIndexRecord.source_name).where(
-                DocumentIndexRecord.doc_type.in_(EXTERNAL_DOC_TYPES)
-            )
+            select(
+                DocumentIndexRecord.doc_id, DocumentIndexRecord.source_name, DocumentIndexRecord.source_ref
+            ).where(DocumentIndexRecord.doc_type.in_(EXTERNAL_DOC_TYPES))
         ).all()
-    return {doc_id: name for doc_id, name in rows}
+    return {doc_id: (name, ref) for doc_id, name, ref in rows}
+
+
+def mdoc_source_ref(doc: dict, *, via: str) -> str:
+    """Record ref for a monday Doc: carries ``updated_at`` + the reader used (md / blocks), so an
+    unchanged doc is skipped without re-reading, and a blocks-read one is upgraded to markdown."""
+    ref = f"monday:doc:{doc.get('id')}"
+    if doc.get("updated_at"):
+        ref += f"@{doc['updated_at']}"
+    return f"{ref}#{via}"
 
 
 def _sync_with_client(client: MondayClient) -> dict:
@@ -896,7 +942,7 @@ def _sync_with_client(client: MondayClient) -> dict:
             skipped.append({"name": a.name, "where": where, "reason": reason})
             continue
         seen.add(doc_id)
-        if existing.get(doc_id) == label:
+        if (existing.get(doc_id) or ("", ""))[0] == label:
             stats["files_unchanged"] += 1
             continue
         try:
@@ -935,8 +981,21 @@ def _sync_with_client(client: MondayClient) -> dict:
         doc_id = mdoc_doc_id(str(d.get("id")))
         seen.add(doc_id)
         stats["docs"] += 1
+        label = f"{name} · monday Doc"[:500]
+        prev = existing.get(doc_id)
+        # Not edited since it was indexed from the markdown export → nothing to read at all.
+        if d.get("updated_at") and prev == (label, mdoc_source_ref(d, via="md")):
+            stats["docs_unchanged"] += 1
+            continue
         try:
-            text = reader.text(str(d.get("id")))
+            text = reader.markdown(str(d.get("id")))
+            via = "md"
+            if not text:
+                if reader.throttled and prev:
+                    # Export rate-limited: keep the indexed version, retry on the next sync.
+                    stats["docs_unchanged"] += 1
+                    continue
+                text, via = reader.blocks(str(d.get("id"))), "blocks"
         except MondayKbError as exc:
             clean_listing = False
             skipped.append({"name": name, "where": "monday Doc", "reason": f"ошибка чтения: {exc}"})
@@ -946,10 +1005,9 @@ def _sync_with_client(client: MondayClient) -> dict:
             stats["skipped"] += 1
             skipped.append({"name": name, "where": "monday Doc", "reason": "документ пустой"})
             continue
-        label = f"{name} · monday Doc"[:500]
         try:
             result = upsert_external_document(
-                doc_id=doc_id, doc_type=DOC_TYPE_DOC, source_ref=f"monday:doc:{d.get('id')}",
+                doc_id=doc_id, doc_type=DOC_TYPE_DOC, source_ref=mdoc_source_ref(d, via=via),
                 source_name=label,
                 documents=build_documents([(0, text)], label=label, doc_type=DOC_TYPE_DOC,
                                           header=f"Документ: {name} (monday Doc)",

@@ -493,7 +493,11 @@ def upsert_external_document(
     source_name: str,
     documents: list[Document],
 ) -> dict:
-    """Upsert a document from an external source (e.g. monday.com). Re-embeds only on change."""
+    """Upsert a document from an external source (e.g. monday.com). Re-embeds only on change.
+
+    Unlike PDFs, an unchanged-content upsert still refreshes source_ref/source_name: the monday
+    sync keeps change markers (e.g. the doc's ``updated_at``) there to skip unchanged docs.
+    """
     with get_session_factory()() as db:
         result = _upsert_document(
             db,
@@ -503,6 +507,11 @@ def upsert_external_document(
             source_name=source_name,
             documents=documents,
         )
+        if result.get("status") == "unchanged":
+            rec = db.get(DocumentIndexRecord, doc_id)
+            if rec is not None and (rec.source_ref != source_ref or rec.source_name != source_name):
+                rec.source_ref = source_ref
+                rec.source_name = source_name
         db.commit()
     return result
 
