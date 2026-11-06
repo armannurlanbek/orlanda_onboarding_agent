@@ -192,19 +192,24 @@ _Q_BOARDS_IN_WS = (
     "query ($ws: [ID], $page: Int!) { boards(workspace_ids: $ws, limit: 100, page: $page, "
     "state: active) { id name type } }"
 )
-_Q_BOARDS_BY_ID = "query ($ids: [ID!]) { boards(ids: $ids) { id name type } }"
+# NB: every by-ids query passes an explicit limit — monday's default page size is 25, so a batch of
+# 50 ids without it silently drops half the rows (boards/folders/docs alike).
+_Q_BOARDS_BY_ID = "query ($ids: [ID!]) { boards(ids: $ids, limit: 100) { id name type } }"
 _Q_FOLDERS_IN_WS = (
     "query ($ws: [ID], $page: Int!) { folders(workspace_ids: $ws, limit: 100, page: $page) "
     "{ id name children { id name } sub_folders { id name } } }"
 )
 _Q_FOLDERS_BY_ID = (
-    "query ($ids: [ID!]) { folders(ids: $ids) { id name children { id name } sub_folders { id name } } }"
+    "query ($ids: [ID!]) { folders(ids: $ids, limit: 100) "
+    "{ id name children { id name } sub_folders { id name } } }"
 )
 _Q_DOCS_IN_WS = (
     "query ($ws: [ID], $page: Int!) { docs(workspace_ids: $ws, limit: 100, page: $page) "
     "{ id object_id name url } }"
 )
-_Q_DOCS_BY_OBJECT = "query ($ids: [ID!]) { docs(object_ids: $ids) { id object_id name url } }"
+_Q_DOCS_BY_OBJECT = (
+    "query ($ids: [ID!]) { docs(object_ids: $ids, limit: 100) { id object_id name url } }"
+)
 _Q_DOC_MARKDOWN = (
     "query ($id: ID!) { export_markdown_from_doc(docId: $id) { success markdown error } }"
 )

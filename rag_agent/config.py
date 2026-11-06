@@ -217,7 +217,9 @@ RAG_MONDAY_KB_TOKEN_USER = os.environ.get("RAG_MONDAY_KB_TOKEN_USER", "").strip(
 # Names to discover (comma-separated). Matching ignores case, spaces, punctuation and emoji,
 # so "📚 Knowledge Base" matches "Knowledge base".
 RAG_MONDAY_KB_NAMES = [
-    n.strip() for n in os.environ.get("RAG_MONDAY_KB_NAMES", "Knowledge base").split(",") if n.strip()
+    n.strip()
+    for n in os.environ.get("RAG_MONDAY_KB_NAMES", "Knowledge base,Knowledge HUB").split(",")
+    if n.strip()
 ]
 
 
