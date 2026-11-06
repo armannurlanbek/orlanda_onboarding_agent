@@ -587,7 +587,8 @@ def retrieval_debug(query: str, limit: int = 12) -> dict[str, Any]:
 def retrieve_context(query: str) -> tuple[str, str]:
     """
     Retrieve relevant context from the knowledge base to answer the user's query.
-    Use this when you need information from the company's PDF documents.
+    Use this when you need information from the company's documents (PDFs, text blocks and
+    the files/docs of the monday.com "Knowledge base").
     """
     final_docs, ranked_rows, _query_variants, err = _run_retrieval_core(query)
     if err:

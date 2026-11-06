@@ -82,6 +82,37 @@ export type MondayStatus = {
   connectedAt?: string | null;
 };
 
+// monday.com "Knowledge base" → RAG index sync (admin Knowledge modal).
+export type MondayKbFile = {
+  docId: string;
+  kind: "file" | "doc";
+  name: string;
+  board: string;
+  item: string;
+  url: string;
+  chunks: number;
+  updatedAt: string;
+};
+
+export type MondayKbSkipped = { name: string; where: string; reason: string };
+
+export type MondayKbStatus = {
+  enabled: boolean;
+  configured: boolean;
+  tokenSource: string | null;
+  running: boolean;
+  lastFinishedAt: string | null;
+  lastOk: boolean | null;
+  lastError: string | null;
+  complete: boolean;
+  roots: { kind: string; id: string; name: string }[];
+  progress: { done: number; total: number; current: string } | null;
+  intervalMinutes: number;
+  names: string[];
+  files: MondayKbFile[];
+  skipped: MondayKbSkipped[];
+};
+
 export type MemoryCategory = "fact" | "preference" | "task_recipe";
 
 export type UserMemory = {

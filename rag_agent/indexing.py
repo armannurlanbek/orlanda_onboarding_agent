@@ -28,6 +28,10 @@ RAG_AGENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = RAG_AGENT_DIR.parent
 KNOWLEDGE_BASE_DIR = PROJECT_ROOT / "knowledge_base"
 
+# Index entries owned by external syncs (rag_agent.monday_kb). reconcile_all_documents() must
+# not treat them as stale just because they are not local PDFs / knowledge items.
+EXTERNAL_DOC_TYPES = ("monday_file", "monday_doc")
+
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 250
 _splitter = RecursiveCharacterTextSplitter(
@@ -481,6 +485,28 @@ def upsert_knowledge_item(item_id: str) -> dict:
     return result
 
 
+def upsert_external_document(
+    *,
+    doc_id: str,
+    doc_type: str,
+    source_ref: str,
+    source_name: str,
+    documents: list[Document],
+) -> dict:
+    """Upsert a document from an external source (e.g. monday.com). Re-embeds only on change."""
+    with get_session_factory()() as db:
+        result = _upsert_document(
+            db,
+            doc_id=doc_id,
+            doc_type=doc_type,
+            source_ref=source_ref,
+            source_name=source_name,
+            documents=documents,
+        )
+        db.commit()
+    return result
+
+
 def delete_pdf_document(rel_path: str) -> bool:
     return delete_document(_pdf_doc_id(_normalize_rel(rel_path)))
 
@@ -516,8 +542,13 @@ def reconcile_all_documents() -> dict:
 
     removed = 0
     with get_session_factory()() as db:
-        rows = db.execute(select(DocumentIndexRecord.doc_id)).all()
-        stale = [doc_id for (doc_id,) in rows if doc_id not in expected_ids]
+        rows = db.execute(select(DocumentIndexRecord.doc_id, DocumentIndexRecord.doc_type)).all()
+        # External (monday) documents are reconciled by their own sync, never here.
+        stale = [
+            doc_id
+            for (doc_id, doc_type) in rows
+            if doc_id not in expected_ids and doc_type not in EXTERNAL_DOC_TYPES
+        ]
         for doc_id in stale:
             delete_document(doc_id, db=db)
             removed += 1

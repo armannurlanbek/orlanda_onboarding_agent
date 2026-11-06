@@ -94,6 +94,7 @@ from rag_agent.monday_oauth import (
     verify_state as monday_verify_state,
 )
 from rag_agent.monday_tools import aget_monday_tools_for_user
+from rag_agent import monday_kb
 from rag_agent.indexing import (
     KNOWLEDGE_BASE_DIR,
     reconcile_all_documents,
@@ -310,9 +311,12 @@ async def lifespan(app: FastAPI):
         get_base_agent()
     except Exception:
         logger.exception("Failed to warm base agent/checkpointer on startup")
+    # monday.com "Knowledge base" → RAG index: first sync shortly after startup, then periodic.
+    monday_kb.start_background_sync()
     try:
         yield
     finally:
+        monday_kb.stop_background_sync()
         close_checkpointer()
 
 
@@ -2914,11 +2918,42 @@ def knowledge_upload(
 
 @app.post("/knowledge/reindex")
 def knowledge_reindex(authorization: str | None = Header(default=None)):
-    """Rebuild the RAG index from PDFs + knowledge items. Requires admin."""
+    """Rebuild the RAG index from PDFs + knowledge items, and pull monday's Knowledge base
+    in the background. Requires admin."""
     _require_admin(authorization)
     invalidate_vector_store()
     result = reconcile_all_documents()
-    return {"ok": True, "files": list_knowledge_files(), "items": ki_list(), "reconcile": result}
+    monday_started = monday_kb.trigger_sync_async("reindex")
+    return {
+        "ok": True,
+        "files": list_knowledge_files(),
+        "items": ki_list(),
+        "reconcile": result,
+        "monday_sync_started": monday_started,
+    }
+
+
+@app.get("/knowledge/monday")
+def knowledge_monday_status(authorization: str | None = Header(default=None)):
+    """Status of the monday.com Knowledge base sync + the files it indexed. Requires admin."""
+    _require_admin(authorization)
+    return monday_kb.get_status()
+
+
+@app.post("/knowledge/monday/sync")
+def knowledge_monday_sync(request: Request, authorization: str | None = Header(default=None)):
+    """Start a monday.com Knowledge base sync now (runs in the background). Requires admin."""
+    admin_username = _require_admin(authorization)
+    if not monday_kb.RAG_MONDAY_KB_ENABLED:
+        raise HTTPException(status_code=503, detail="Синхронизация с monday отключена (RAG_MONDAY_KB_ENABLED)")
+    started = monday_kb.trigger_sync_async("manual")
+    write_audit(
+        "monday_kb_sync",
+        admin_username,
+        details={"started": started},
+        ip_address=request.client.host if request.client else "",
+    )
+    return {"started": started, **monday_kb.get_status(include_files=False)}
 
 
 # --- Knowledge items (text blocks) ---

@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { MondayKbSection } from "@/components/MondayKbSection";
 import { api } from "@/lib/apiClient";
 import { useAuth } from "@/lib/auth";
 import type { PdfFile, TextBlock } from "@/lib/types";
@@ -14,7 +15,7 @@ import { toast } from "sonner";
 const fmtKb = (b: number) => b < 1024 * 1024 ? `${(b / 1024).toFixed(0)} КБ` : `${(b / 1024 / 1024).toFixed(1)} МБ`;
 
 export function KnowledgeModal({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [pdfs, setPdfs] = useState<PdfFile[] | null>(null);
   const [blocks, setBlocks] = useState<TextBlock[] | null>(null);
   const [selected, setSelected] = useState<PdfFile | null>(null);
@@ -26,6 +27,8 @@ export function KnowledgeModal({ open, onOpenChange }: { open: boolean; onOpenCh
   const [blockName, setBlockName] = useState("");
   const [blockContent, setBlockContent] = useState("");
   const [reindexing, setReindexing] = useState(false);
+  // Bumped after "Обновить индекс" (which also starts a monday sync) to refresh the monday block.
+  const [mondayRefreshKey, setMondayRefreshKey] = useState(0);
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -133,7 +136,7 @@ export function KnowledgeModal({ open, onOpenChange }: { open: boolean; onOpenCh
     if (!token) return;
     setReindexing(true);
     try { await api.knowledge.reindex(token); toast.success("Индекс обновлён"); }
-    finally { setReindexing(false); }
+    finally { setReindexing(false); setMondayRefreshKey((k) => k + 1); }
   };
 
   return (
@@ -192,6 +195,10 @@ export function KnowledgeModal({ open, onOpenChange }: { open: boolean; onOpenCh
                       </li>
                     ))}
                   </ul>
+                )}
+
+                {user?.role === "admin" && (
+                  <MondayKbSection token={token} open={open} refreshKey={mondayRefreshKey} />
                 )}
 
                 <div className="mt-6 px-2 py-2 flex items-center justify-between">

@@ -89,7 +89,7 @@ class DocumentIndexRecord(Base):
     __tablename__ = "rag_documents"
 
     doc_id: Mapped[str] = mapped_column(String(512), primary_key=True)
-    # Supported types: "pdf" | "knowledge_item".
+    # Supported types: "pdf" | "knowledge_item" | "monday_file" | "monday_doc" (see monday_kb).
     doc_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     # Relative pdf path or knowledge item id.
     source_ref: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True, index=True)

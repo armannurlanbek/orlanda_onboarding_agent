@@ -11,6 +11,7 @@ import type {
   FeedbackLink,
   MemorySettings,
   Message,
+  MondayKbStatus,
   MondayStatus,
   OrlandaProject,
   PdfFile,
@@ -117,6 +118,62 @@ function mapFileToPdf(f: any): PdfFile {
     uploadedAt: toIso(f?.uploaded_at),
     ragText: "",
     ragOverride: false,
+  };
+}
+
+// Raw /knowledge/monday payload (snake_case, all optional).
+type RawMondayKbStatus = {
+  enabled?: boolean;
+  configured?: boolean;
+  token_source?: string | null;
+  running?: boolean;
+  last_finished_at?: string | null;
+  last_ok?: boolean | null;
+  last_error?: string | null;
+  stats?: { complete?: boolean } | null;
+  roots?: { kind?: string; id?: string; name?: string }[];
+  progress?: { done?: number; total?: number; current?: string } | null;
+  interval_minutes?: number;
+  names?: string[];
+  files?: {
+    doc_id?: string;
+    type?: string;
+    name?: string;
+    board?: string;
+    item?: string;
+    url?: string;
+    chunks?: number;
+    updated_at?: string;
+  }[];
+  skipped?: { name?: string; where?: string; reason?: string }[];
+};
+
+export function mapMondayKbStatus(d: RawMondayKbStatus): MondayKbStatus {
+  const p = d.progress;
+  return {
+    enabled: Boolean(d.enabled),
+    configured: Boolean(d.configured),
+    tokenSource: d.token_source || null,
+    running: Boolean(d.running),
+    lastFinishedAt: d.last_finished_at || null,
+    lastOk: typeof d.last_ok === "boolean" ? d.last_ok : null,
+    lastError: d.last_error || null,
+    complete: d.stats?.complete !== false,
+    roots: (d.roots ?? []).map((r) => ({ kind: r.kind || "", id: String(r.id || ""), name: r.name || "" })),
+    progress: p ? { done: Number(p.done || 0), total: Number(p.total || 0), current: p.current || "" } : null,
+    intervalMinutes: Number(d.interval_minutes || 0),
+    names: (d.names ?? []).map(String),
+    files: (d.files ?? []).map((f) => ({
+      docId: f.doc_id || "",
+      kind: f.type === "monday_doc" ? "doc" : "file",
+      name: f.name || "",
+      board: f.board || "",
+      item: f.item || "",
+      url: f.url || "",
+      chunks: Number(f.chunks || 0),
+      updatedAt: f.updated_at || "",
+    })),
+    skipped: (d.skipped ?? []).map((x) => ({ name: x.name || "", where: x.where || "", reason: x.reason || "" })),
   };
 }
 
@@ -619,6 +676,13 @@ export const api = {
     },
     async reindex(token: string): Promise<void> {
       await request("/knowledge/reindex", { method: "POST", token });
+    },
+    async mondayStatus(token: string): Promise<MondayKbStatus> {
+      return mapMondayKbStatus(await request<RawMondayKbStatus>("/knowledge/monday", { token }));
+    },
+    async mondaySync(token: string): Promise<boolean> {
+      const data = await request<{ started?: boolean }>("/knowledge/monday/sync", { method: "POST", token });
+      return Boolean(data?.started);
     },
   },
 

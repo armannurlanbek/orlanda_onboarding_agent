@@ -199,6 +199,43 @@ RAG_MONDAY_AGENT_RECURSION_LIMIT = max(
     int(os.environ.get("RAG_MONDAY_AGENT_RECURSION_LIMIT", "40")),
 )
 
+# ── monday.com "Knowledge base" → RAG index sync (rag_agent.monday_kb) ───────
+# A background job finds the monday board / folder / workspace named like
+# RAG_MONDAY_KB_NAMES, downloads its files (PDF, DOCX, PPTX, XLSX, TXT/MD/CSV) and monday
+# Docs, and indexes them into the same pgvector tables as the local PDFs, so every employee's
+# retrieve_context sees them (independent of per-user monday OAuth). Unchanged files are not
+# re-downloaded or re-embedded; files removed in monday are removed from the index.
+RAG_MONDAY_KB_ENABLED = os.environ.get("RAG_MONDAY_KB_ENABLED", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+# Service token for the sync (monday → Avatar → Developers → API token). Recommended: it can
+# read files, which per-user OAuth tokens can't without the assets:read scope. When empty, the
+# sync falls back to the stored OAuth token of RAG_MONDAY_KB_TOKEN_USER, or of any admin who
+# connected monday.
+RAG_MONDAY_KB_API_TOKEN = os.environ.get("RAG_MONDAY_KB_API_TOKEN", "").strip() or None
+RAG_MONDAY_KB_TOKEN_USER = os.environ.get("RAG_MONDAY_KB_TOKEN_USER", "").strip().lower() or None
+# Names to discover (comma-separated). Matching ignores case, spaces, punctuation and emoji,
+# so "📚 Knowledge Base" matches "Knowledge base".
+RAG_MONDAY_KB_NAMES = [
+    n.strip() for n in os.environ.get("RAG_MONDAY_KB_NAMES", "Knowledge base").split(",") if n.strip()
+]
+
+
+def _id_list(name: str) -> list[str]:
+    return [x.strip() for x in os.environ.get(name, "").split(",") if x.strip().isdigit()]
+
+
+# Explicit monday ids. When any is set, name discovery is skipped.
+RAG_MONDAY_KB_BOARD_IDS = _id_list("RAG_MONDAY_KB_BOARD_IDS")
+RAG_MONDAY_KB_FOLDER_IDS = _id_list("RAG_MONDAY_KB_FOLDER_IDS")
+RAG_MONDAY_KB_WORKSPACE_IDS = _id_list("RAG_MONDAY_KB_WORKSPACE_IDS")
+# Automatic sync period in minutes (0 = no automatic sync, only the admin "Sync" button).
+# Non-zero values are clamped to 5..1440. The first sync runs shortly after startup.
+_kb_interval = int(os.environ.get("RAG_MONDAY_KB_SYNC_INTERVAL_MINUTES", "30"))
+RAG_MONDAY_KB_SYNC_INTERVAL_MINUTES = 0 if _kb_interval <= 0 else max(5, min(1440, _kb_interval))
+# Files larger than this are skipped (and listed as skipped in the admin panel).
+RAG_MONDAY_KB_MAX_FILE_MB = max(1, min(500, int(os.environ.get("RAG_MONDAY_KB_MAX_FILE_MB", "50"))))
+
 
 # ── Client portal (external clients) ─────────────────────────────────────────
 # External clients register via invite links (role="client") and use a separate
