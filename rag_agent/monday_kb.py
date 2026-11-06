@@ -483,7 +483,9 @@ def block_text(block: dict) -> str:
     ).strip()
     if not text:
         return ""
-    return _BLOCK_PREFIX.get(str(block.get("type") or ""), "") + text
+    # The API reports types with spaces ("large title", "bulleted list").
+    kind = str(block.get("type") or "").strip().lower().replace(" ", "_")
+    return _BLOCK_PREFIX.get(kind, "") + text
 
 
 class _DocReader:
@@ -941,6 +943,7 @@ def _sync_with_client(client: MondayClient) -> dict:
             continue
         if not text:
             seen.discard(doc_id)
+            stats["skipped"] += 1
             skipped.append({"name": name, "where": "monday Doc", "reason": "документ пустой"})
             continue
         label = f"{name} · monday Doc"[:500]
